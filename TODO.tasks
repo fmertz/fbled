@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<gtodo>
+  <category title="Personal" place="0">
+    <item>
+      <attribute id="1300381897" priority="0" done="0" start_date="734213" enddate="99999999" notify="0" endtime="-60" last_edited="1300381897"/>
+      <summary>Add logic to drop privilege</summary>
+      <comment/>
+    </item>
+    <item>
+      <attribute id="1300381936" priority="1" done="0" start_date="734213" enddate="99999999" notify="0" endtime="-60" last_edited="1300381936"/>
+      <summary>Add support for command line options</summary>
+      <comment/>
+    </item>
+    <item>
+      <attribute id="1300381868" priority="0" done="1" start_date="734213" completed_date="734219" notify="0" last_edited="1300904880"/>
+      <summary>Add Load logic</summary>
+      <comment/>
+    </item>
+    <item>
+      <attribute id="1300381882" priority="0" done="1" start_date="734213" completed_date="734219" notify="0" last_edited="1300904881"/>
+      <summary>Add Traffic logic</summary>
+      <comment/>
+    </item>
+    <item>
+      <attribute id="1300381917" priority="0" done="1" start_date="734213" completed_date="734219" notify="0" last_edited="1300904884"/>
+      <summary>Add support for signals</summary>
+      <comment></comment>
+    </item>
+  </category>
+  <category title="Business" place="1"/>
+  <category title="Unfiled" place="2"/>
+</gtodo>
