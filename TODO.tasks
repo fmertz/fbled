@@ -24,6 +24,11 @@
     <item>
       <attribute id="1300381917" priority="0" done="1" start_date="734213" completed_date="734219" notify="0" last_edited="1300904884"/>
       <summary>Add support for signals</summary>
+      <comment/>
+    </item>
+    <item>
+      <attribute id="1300910448" priority="1" done="0" start_date="734219" enddate="99999999" notify="0" endtime="-60" last_edited="1300910448"/>
+      <summary>Verify only 1 instance can run</summary>
       <comment></comment>
     </item>
   </category>

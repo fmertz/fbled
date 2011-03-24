@@ -70,7 +70,7 @@
 //               Idea: the boot process has completed
 //               Idea: flashes to indictate this code is running
 //    Sys A: "Indicates that the Firebox is running from its primary user-defined configuration."
-//               Idea: os running off of randrive, early boot
+//               Idea: os running off of ramdrive, early boot
 //    Sys B: "Indicates that the Firebox is running from the readonly factory default system area."
 //               Idea: os running off of storage device, root file system mounted, normal operation
 //   Power: "Indicates that the Firebox is currently powered up."
@@ -149,7 +149,7 @@
 
 //Driver prototypes
 static int DrvInit(unsigned char);
-static int DrvEnd(void);
+static int DrvEnd(unsigned);
 static inline void DrvSetLeds(unsigned);
 static void DrvSetLedsWait(unsigned, unsigned long);
 

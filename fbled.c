@@ -114,7 +114,7 @@ static int DrvInit(unsigned char uMode)
 
 //DRIVER: Finalize function
 //
-static int DrvEnd(void)
+static int DrvEnd(unsigned uCombo)
 {
 	//Reset all LEDs
 	DrvSetLeds(0x0900);
@@ -122,6 +122,9 @@ static int DrvEnd(void)
 	DrvSetLeds(0x0300);
 	DrvSetLeds(0x0700);
 	DrvSetLeds(0x0F00);
+	//Light left on, if needed
+	if (uCombo)
+		DrvSetLeds(uCombo);
 
 	//Cleanup MutEx
 	pthread_mutex_destroy(&tLEDMutex);
@@ -358,9 +361,8 @@ int main(int nArgc, char **asArgv)
 		pthread_join(tLEDProcTable[u].tThread, NULL); //This is a blocking call, only returning when each worker LED thread terminates
 
 	//At this point, all LED threads have completed
-	
-	//Clean up Driver
-	if (DrvEnd())
+	//Finalize, and turn the DISARMED light on
+	if (DrvEnd(LED_DISARMED))
 	{
 		puts("Cannot Finalize Driver...");
 		return errno;
