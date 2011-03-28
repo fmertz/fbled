@@ -1,6 +1,6 @@
 ///           // fbled.c
 //
-// Copyright (C) 2011 - Francois C Mertz
+// Copyright (C) 2011 - F Mertz
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -16,10 +16,10 @@
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 //  Wed March 16
-//  Copyright  2011  Francois C Mertz
-//  <fcm@DebianDev>
+//  Copyright  2011  F Mertz
+//  <fireboxled@gmail.com>
 //
-// This project aims at providing a simple deamon to update the front LEDs on a Watchguard Firebox III. This code is
+// This project aims at providing a simple deamon to update the front LEDs on a Watchguard Firebox II/III. This code is
 // logically separated into a Driver and a Client.
 //
 // The Driver is responsible for updating the LEDs based on input parameters, and deals with low-level I/O ports.
@@ -66,11 +66,30 @@ static int DrvInit(unsigned char uMode)
 {
 	int 				iRetVal;
 	unsigned	u;
+	char			cEthNum;
+	FILE				*tEthFile=NULL;
+	char			acMACAddress[256];
+	char			acFileName[256];
 
+	//Try and find out if this code is running on a Firebox
+	//Look at the MAC addresses of eth0-4 and see if at least 1 is part of the Watchguard range
+	for (cEthNum='0';cEthNum!='5';cEthNum++)
+	{
+		snprintf(acFileName,sizeof(acFileName),"/sys/class/net/eth%c/address",cEthNum);
+		if (NULL==(tEthFile=fopen(acFileName,"r")))
+			continue;
+		if (fgets(acMACAddress,sizeof(acMACAddress), tEthFile))
+			if (0 == strncmp(acMACAddress,WATCHGUARD_OUI,sizeof(WATCHGUARD_OUI)))
+				//Found one, but no guarantee it is a Firebox II or III 
+				break;
+	}
+	if ('5' == cEthNum)
+		//Did not find a Watchguard OUI
+		return -1;
 	//In order to make direct use of I/O ports from user space, access has to be requested
 	// Tutorial: http://www.faqs.org/docs/Linux-mini/IO-Port-Programming.html
-	// This needs "root" permission to succeed, and might be Linux-specific
-	iRetVal = IOPERM(LED_BASEPORT, 3, 255); //LINUX
+	// This needs "root" permission to succeed
+	iRetVal = IOPERM(LED_BASEPORT, 3, 255);
 	if (iRetVal) return iRetVal;
 
 	//Reset all LEDs

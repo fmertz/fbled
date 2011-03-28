@@ -1,0 +1,90 @@
+Welcome to the fbled README
+
+This project aims at providing an open-source daemon to update the front-panel
+LEDs of the Watchguard Firebox II and Firebox III. These boxes are basically PC-
+based appliances based on the x86 architecture. They feature 3 10/100 Ethernet
+ports and a programmable LED panel.
+
+The home of this code is
+ 
+                              https://github.com/fmertz/fbled
+
+Watchguard and Firebox are used here for identification purposes, and are no
+doubt the property on their owner. This project has no connection whatsoever
+with the manufacturer of the appliances. Other trademarks are referred to for 
+identification as well.
+
+Of direct interest for this project, these boxes feature a front panel with a number
+of programmable LEDs. The LEDs are grouped in 3 stacks and a triangle. There is
+a stack for specific statuses (SYS A, SYS B, ARMED, DISARMED and POWER), a stack
+of 8 LEDs for LOAD and another stack of 8 LEDs for Traffic. The Triangle (meant to
+have each vertex match an Ethernet port) had LEDs at each vertex, plus 2 LEDs in
+each direction from all vertices.
+
+These white LEDs can only be controlled as on or off, but can be controlled
+individually. They are already behind colored masks, so they appear colored
+yellow, green or red already.
+
+The idea of the fbled project is to be able to walk up to one of these boxes and
+have a sense of what the machine is up to, generally
+
+	OFF is not applicable
+	ON is normal
+	BLINKING means needs attention
+    BLINKING FAST means needs attention even more
+
+The code is logically separated into a Driver and a Client. The Driver is
+responsible for updating the LEDs based on input parameters, and deals with
+low-level I/O ports. The driver might be reimplemented as a real Linux driver/
+module at a later point. The Client is responsible for gathering the live values
+from the running system, parse them, normalize them, then pass them to the
+Driver.
+
+From a development perspective, a choice was made early on to make it
+available for others to use, study and hopefully contribute. It is clear that
+fbled is meant for the x86 architecture only, but it is less clear what operating
+system it could run under. Therefore, in the interest of portability across OS,
+this project uses the Autotools, and is basically centered around the GNU C
+Library. The run-time values are gathered with portable code, but invariably
+depend on the specifics of where those values come from. Following the
+"everything is a file" idiom, this code follows the usual user-space interface
+to the system by reading "files" in the /proc or /sys areas. This is an area
+where portability issues are anticipated to crop up.
+
+fbled is licensed under GPLv3, and is offered to others in the spirit of giving
+a little something back to the free software movement.
+
+USAGE:
+fbled just runs. As any user-space process in need of control of individual I/O
+port, it needs to be privileged, i.e. run as "root". This can be accomplished in
+a number of ways:
+- It can be started as a part of the boot process by init
+- It can be started directly by the root user
+- It can be stored on the file system with setuid-root, i.e. be owned by root,
+  and have execution bits set to setuid. This way, it can be run by any user.
+- If can be started with sudo, provided sudo is setup for the current user
+
+OPERATING SYSTEM
+Altogether, the appliance boots with a BIOS. The BIOS then boots off of IDE
+storage. There is no special boot locking, so anything that can be booted
+could run. There are some online guides, but basically, the jumpers can be
+setup so the internal flash drive is set as slave, and a replacement, larger
+capacity primary drive is setup with an image of choice. CompactFlash is easy
+and cheap to setup. Real hard drives could work, too.
+
+A quick search reveals that folks are booting a number of distributions, either
+Linux-based, or BSD-based:
+
+Linux:
+	Vyatta
+	Open-WRT
+	DD-WRT
+
+BSD:
+	pfSense
+	m0n0wall
+
+Folks are encouraged to use the wiki to share their experience and help others
+
+                                      https://github.com/fmertz/fbled/wiki
+

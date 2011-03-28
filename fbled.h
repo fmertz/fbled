@@ -1,6 +1,6 @@
 //           // fbled.h
 //
-// Copyright (C) 2011 - Francois C Mertz
+// Copyright (C) 2011 - F Mertz
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License as published by
@@ -16,10 +16,10 @@
 // along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 //  Wed March 16
-//  Copyright  2011  Francois C Mertz
-//  <fcm@DebianDev>
+//  Copyright  2011  F Mertz
+//  <fireboxled@gmail.com>
 //
-// This project aims at providing a simple deamon to update the front LEDs on a Watchguard Firebox III. This code is
+// This project aims at providing a simple deamon to update the front LEDs on a Watchguard Firebox II/III. This code is
 // logically separated into a Driver and a Client.
 //
 // The Driver is responsible for updating the LEDs based on input parameters, and deals with low-level I/O ports.
@@ -78,9 +78,7 @@
 // Triangle: "Indicates traffic between Firebox interfaces. Green arrows briefly light to indicate allowed traffic
 //                between two interfaces in the direction of the arrows. A red light at a triangle corner indicates 
 //                that the Firebox is denying packets at that interface."
-//                Idea: for External, Trusted and Other, light corner is interface has an IP address
-//                Idea: for External, Trusted and Other, light corner is interface is up/has a link
-//                Idea: for External, Trusted and Other, light corner if interface has a firewall attached
+//                For External, Trusted and Other, off if no link, on if link AND IP address, blink if link, no IP
 //    Traffic: "A stack of lights that functions as a meter to indicate levels of traffic volume through the 
 //                Firebox. Low volume indicators are green, while high volume indicators are yellow. The display 
 //                updates three times per second. The scale is exponential: the first light represents 64 packets/ 
@@ -146,6 +144,7 @@
 #define DRV_FAST			0
 #define DRV_SLOW			1
 #define DRV_INIT_WAIT		200000000 //.2 sec
+#define WATCHGUARD_OUI "00:90:7f"
 
 //Driver prototypes
 static int DrvInit(unsigned char);
