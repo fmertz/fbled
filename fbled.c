@@ -60,6 +60,9 @@ static pthread_mutex_t tLEDMutex;
 //
 static unsigned volatile uKeepGoing=1;
 
+//This is used for stck style
+static unsigned uStackStyle=STACK_BAR;
+
 //DRIVER: Initialize function
 //
 static int DrvInit(unsigned char uMode)
@@ -79,7 +82,7 @@ static int DrvInit(unsigned char uMode)
 		if (NULL==(tEthFile=fopen(acFileName,"r")))
 			continue;
 		if (fgets(acMACAddress,sizeof(acMACAddress), tEthFile))
-			if (0 == strncmp(acMACAddress,WATCHGUARD_OUI,sizeof(WATCHGUARD_OUI)))
+			if (0 == memcmp(acMACAddress,WATCHGUARD_OUI,sizeof(WATCHGUARD_OUI)-1))
 				//Found one, but no guarantee it is a Firebox II or III 
 				break;
 	}
@@ -208,11 +211,19 @@ static void DoLoad(void)
 	for (uLedBits=1;uLoad>1;uLedBits=uLedBits<<1) //Cheap log function
 		uLoad=uLoad>>1;
 
+	//Apply the style modifyer
+	if (uStackStyle & STACK_LINE)
+		uLedBits>>=1;
+	if (uStackStyle & STACK_BAR || uStackStyle & STACK_RAW)
+		uLedBits--;
+	if (uStackStyle & STACK_REVERSE)
+		uLedBits^=0xFF;
+	
 	//Only update LEDs if necessary
 	if (uLedBits != uLedBitsOld)
 	{
 		uLedBitsOld=uLedBits;
-		SetLeds(LED_LOAD_LO-1+uLedBits-1);
+		SetLeds(LED_LOAD_LO-1+uLedBits);
 	}
 }
 
@@ -281,14 +292,21 @@ static void DoTraffic(void)
 		//basically, find the highest bit set to 1
 		for (uLedBits=1;lRate>0;uLedBits=uLedBits<<1) //Cheap log function
 			lRate=lRate>>1;
-		//At this point, uLedBits is a power of 2, and would light only 1 bit
-		//so, by doing uLedBits -1, we set to 1 all bits lower than uLedBits
+		//Apply the style modifyer
+		if (uStackStyle & STACK_LINE)
+			uLedBits>>=1;
+		if (uStackStyle & STACK_BAR)
+			uLedBits--;
+		if (uStackStyle & STACK_RAW)
+			uLedBits=(lAllPackets/64)&0xFF; //This displays the low byte of 64 packet count in binary
+		if (uStackStyle & STACK_REVERSE)
+			uLedBits^=0xFF;
 		//Only update LEDs if necessary
 		if (uLedBits != uLedBitsOld)
 		{
 			uLedBitsOld=uLedBits;
 			//Use thread-safe LED update
-			SetLeds(LED_TRAFFIC_LO-1+uLedBits-1);
+			SetLeds(LED_TRAFFIC_LO-1+uLedBits);
 		}
 	}
 	//Set time and count baseline for next run
@@ -346,8 +364,42 @@ void Scheduler(tExecTable *ptSlice)
 //
 void ExitHandler(int iSigNum)
 {
-	//Just change flag for any signal
+	//Just change flag for any termination signal
 	uKeepGoing=0;
+}
+
+//CLIENT: This is the handler for the USR signals
+// A good place to handle alternatives
+//
+void UserHandler(int iSigNum)
+{
+	//For USR1 and USR2, flip styles
+	switch (iSigNum)
+	{
+		case SIGUSR1:
+			if (uStackStyle & STACK_BAR)
+			{
+				uStackStyle^=STACK_BAR;
+				uStackStyle|=STACK_LINE;
+				return;
+			}
+			if (uStackStyle & STACK_LINE)
+			{
+				uStackStyle^=STACK_LINE;
+				uStackStyle|=STACK_RAW;
+				return;
+			}
+			if (uStackStyle & STACK_RAW)
+			{
+				uStackStyle^=STACK_RAW;
+				uStackStyle|=STACK_BAR;
+				return;
+			}
+			//break;
+			
+		case SIGUSR2:
+			uStackStyle^=STACK_REVERSE;
+	}
 }
 
 //CLIENT: Entry point upon execution
@@ -369,6 +421,10 @@ int main(int nArgc, char **asArgv)
 	signal(SIGINT, ExitHandler);
 	signal(SIGTERM, ExitHandler);
 	signal(SIGQUIT, ExitHandler);
+	//Setup handler for USR1, USR2
+	//This will run on kill -USR1 <pid> or kill -USR2 <pid>
+	signal(SIGUSR1, UserHandler);
+	signal(SIGUSR2, UserHandler);
 	//Create threads, by default these threads are joinable
 	for (u=0;u<SIZE(tLEDProcTable);u++)
 		pthread_create(&tLEDProcTable[u].tThread, NULL, (void * (*)(void *))&Scheduler, (void *) &tLEDProcTable[u]);

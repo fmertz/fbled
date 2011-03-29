@@ -144,7 +144,19 @@
 #define DRV_FAST			0
 #define DRV_SLOW			1
 #define DRV_INIT_WAIT		200000000 //.2 sec
+#ifndef LED_DEBUG
+//Real Watchguard range
 #define WATCHGUARD_OUI "00:90:7f"
+#else
+//Virtualbox range
+#define WATCHGUARD_OUI "08:00:27"
+#endif
+
+//Stack styles for Traffic and load modifyer
+#define STACK_BAR			1
+#define STACK_LINE			2
+#define STACK_RAW			4
+#define STACK_REVERSE	8
 
 //Driver prototypes
 static int DrvInit(unsigned char);
@@ -174,6 +186,7 @@ static void DoBlink(void);
 void Scheduler(tExecTable *);
 static void SetLeds(unsigned);
 void ExitHandler(int);
+void UserHandler(int);
 
 //Debugging Assist
 #ifndef LED_DEBUG
