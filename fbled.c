@@ -82,9 +82,12 @@ static int DrvInit(unsigned char uMode)
 		if (NULL==(tEthFile=fopen(acFileName,"r")))
 			continue;
 		if (fgets(acMACAddress,sizeof(acMACAddress), tEthFile))
+		{
+			fclose(tEthFile);
 			if (0 == memcmp(acMACAddress,WATCHGUARD_OUI,sizeof(WATCHGUARD_OUI)-1))
 				//Found one, but no guarantee it is a Firebox II or III 
 				break;
+		}
 	}
 	if ('5' == cEthNum)
 		//Did not find a Watchguard OUI
