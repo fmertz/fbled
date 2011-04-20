@@ -104,6 +104,7 @@
 #define LED_BASEPORT	0x378
 #define LED_DATA			(LED_BASEPORT+0)
 #define LED_CONTROL		(LED_BASEPORT+2)
+#define LED_WAITPORT		0x80 //This is used when using the "slow" outb_p
 
 //LED Coding; Control bits in 1 byte followed by Data bits for each LED
 //LED Group 0: Status LEDs, Control Code 2, 0010 xor'ed with 1011 is 1001, 0x09
@@ -144,6 +145,10 @@
 #define DRV_FAST			0
 #define DRV_SLOW			1
 #define DRV_INIT_WAIT		200000000 //.2 sec
+
+//Workers constants
+#define WRK_WAIT			1000000000L/6	//Base wait time is 1/6 of a sec
+
 #ifndef LED_DEBUG
 //Real Watchguard range
 #define WATCHGUARD_OUI "00:90:7f"
@@ -167,12 +172,11 @@ static void DrvSetLedsWait(unsigned, unsigned long);
 //Client Structures
 struct ExecTable
 {
-	void 		(*pfCode)(void);					    //Code to run
-	long		lWaitBefore_sec;						//How long before 1st run
-	long		lWaitBefore_nsec;
-	long		lWaitAfter_sec;							//How long to wait after run
-	long		lWaitAfter_nsec;
-	pthread_t tThread;
+	void				(*pfConstr)(void);						//Contructor, init code, if needed
+	void 			(*pfCode)(void);					    	//Code to run
+	void				(*pfDestr)(void);							//Destructor, close code, if needed
+	unsigned	uSkipCount;
+	unsigned	uRunningCount;
 };
 
 typedef struct ExecTable tExecTable;
@@ -183,8 +187,8 @@ typedef struct ExecTable tExecTable;
 static void DoLoad(void);
 static void DoTraffic(void);
 static void DoBlink(void);
-void Scheduler(tExecTable *);
-static void SetLeds(unsigned);
+static int GetInFile(const char *, char *, const unsigned );
+void Scheduler(tExecTable *, unsigned);
 void ExitHandler(int);
 void UserHandler(int);
 
