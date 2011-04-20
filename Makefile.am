@@ -7,8 +7,7 @@ AM_CPPFLAGS = \
 
 AM_CFLAGS = \
 	 -Wall \
-	 -g \
-	 -lpthread
+	 -g
 
 bin_PROGRAMS = fbled
 
@@ -17,4 +16,3 @@ fbled_SOURCES = \
 	fbled.h
 
 fbled_LDFLAGS = 
-

@@ -31,7 +31,7 @@ have a sense of what the machine is up to, generally
 	OFF is not applicable
 	ON is normal
 	BLINKING means needs attention
-    BLINKING FAST means needs attention even more
+    BLINKING FAST means needs immediate attention
 
 The code is logically separated into a Driver and a Client. The Driver is
 responsible for updating the LEDs based on input parameters, and deals with
@@ -75,8 +75,10 @@ and cheap to setup. Real hard drives could work, too.
 A quick search reveals that folks are booting a number of distributions, either
 Linux-based, or BSD-based:
 
-Linux:
+Linux, with the GNU C Library:
 	Vyatta
+
+Linux, with the uClibc C Library
 	Open-WRT
 	DD-WRT
 

@@ -36,25 +36,24 @@
 #include <sys/time.h>
 #include <errno.h>
 #include <time.h>
-#include <pthread.h>
 #include <signal.h>
+#include <features.h>
 
 //#define LED_DEBUG
 #include "fbled.h"
+#include "config.h"
 
-//This array holds all LED worker functions to be threaded separately
+//This array holds all LED worker functions
+//	Base wait time is defined in WRK_WAIT
+//	All workers are running once every uSkipCount times
 //
 static tExecTable tLEDProcTable[] = {
-	{ .pfCode=	DoLoad,                 .lWaitBefore_sec=	0L, .lWaitBefore_nsec=	0L, .lWaitAfter_sec=	0L, .lWaitAfter_nsec=	1000000000L/3 },
-	{					DoTraffic,												0L, 									0L, 							0L, 								1000000000L/3 },
-	{					DoBlink,												0L,									0L,							0L,								1000000000L/2 }
+	{ .pfConstr=	NULL,	.pfCode=	DoLoad,	.pfDestr=	NULL,	.uSkipCount=	2,	.uRunningCount=	0},
+	{						NULL,					DoTraffic,					NULL,							2,								1},
+	{						NULL,					DoBlink,					NULL,							3,								0}
 };
 
-//This MutEx is used to serialize access to the LEDs across threads
-//
-static pthread_mutex_t tLEDMutex;
-
-//This is used to control the main loop of threads
+//This is used to control the main loop of workers
 // The worker LED threads will read it, the signal handler can change it
 // Turn-off any optimization by the compiler by declaring it volatile
 //
@@ -89,9 +88,9 @@ static int DrvInit(unsigned char uMode)
 				break;
 		}
 	}
-	if ('5' == cEthNum)
+	//if ('5' == cEthNum)
 		//Did not find a Watchguard OUI
-		return -1;
+		//return -1;
 	//In order to make direct use of I/O ports from user space, access has to be requested
 	// Tutorial: http://www.faqs.org/docs/Linux-mini/IO-Port-Programming.html
 	// This needs "root" permission to succeed
@@ -129,11 +128,9 @@ static int DrvInit(unsigned char uMode)
 		//Triangle
 		DrvSetLeds(LED_T2E_2 | LED_O2E_2);
 		DrvSetLedsWait(LED_E2T_2 | LED_O2T_2| LED_T2O_2 | LED_E2O_2,DRV_INIT_WAIT);
+		DrvSetLeds(0x0700);
 		DrvSetLeds(0x0F00);
 	}
-	//Initialize MutEx for serial access to LEDs from all threads
-	pthread_mutex_init(&tLEDMutex, NULL);
-
 	return 0;
 }
 
@@ -151,12 +148,9 @@ static int DrvEnd(unsigned uCombo)
 	if (uCombo)
 		DrvSetLeds(uCombo);
 
-	//Cleanup MutEx
-	pthread_mutex_destroy(&tLEDMutex);
-	
 	//This may need "root" access, and is done by Linux anyway on exit
 	// may want to consider dropping this call if we change identity
-	return IOPERM(LED_BASEPORT, 3, 0); //LINUX
+	return IOPERM(LED_BASEPORT, 3, 0);
 }
 
 //DRIVER: Actually set the LEDs
@@ -165,9 +159,10 @@ static int DrvEnd(unsigned uCombo)
 static inline void DrvSetLeds(unsigned uCombo)
 {
 	//uCombo is Group# and bits in 2 bytes
-	OUTB((uCombo>>8)&0xFE, LED_CONTROL); //Put Group # in control, Strobe bit to 0
-	OUTB((uCombo&0x00FF)^0xFF, LED_DATA);  //Put data for the LEDs, after inversion (bit 1 means LED is "off")
-	OUTB((uCombo>>8)|0x01, LED_CONTROL); //Same Group #, flipping Strobe bit to 1 to actually set LEDs
+	OUTB((uCombo&0x00FF)^0xFF, LED_DATA);	//Put data for the LEDs, after inversion (bit at 1 means LED is "off")
+	OUTB((uCombo>>8)|0x01, LED_CONTROL);	//Put Group # in control, Strobe bit to 1
+	OUTB((uCombo>>8)&0xFE, LED_CONTROL);	//Flip Strobe bit to 0, causes Firebox II to output LED_DATA to LEDs
+	OUTB((uCombo>>8)|0x01, LED_CONTROL);	//Flip Strobe bit to 1, causes Firebox III to output LED_DATA to LEDs
 }
 
 //DRIVER: Set LEDs and wait for a while
@@ -183,31 +178,26 @@ static void DrvSetLedsWait(unsigned uCombo, unsigned long ulInterval)
 	//Technically, can have time remaining in tRem
 }
 
-//CLIENT: This function makes sure access to LEDs is serialized (thread-safe)
-//
-void SetLeds(unsigned uCombo)
-{
-	//Wait for LED ports to be free, if locked already by another thread
-	pthread_mutex_lock(&tLEDMutex);
-	DrvSetLeds(uCombo);
-	//Release lock
-	pthread_mutex_unlock(&tLEDMutex);
-}
-
 //CLIENT: This worker LED function updates the load LEDs based on system load average
 //
 static void DoLoad(void)
 {
 	static unsigned uLedBitsOld=0;
-	double				dLoadLastMin;
+	char					acLoadAvg[256];
+	unsigned			uLoadLastMinInt;
+	unsigned			uLoadLastMinDec;
 	unsigned 			uLoad;
 	unsigned 			uLedBits;
 	
 	//Only get 1st number, load avg in last min
-	getloadavg(&dLoadLastMin, 1);
-
+	//getloadavg(&dLoadLastMin, 1); //uClibc does not have this
+	if (0 == GetInFile ("/proc/loadavg",acLoadAvg,sizeof(acLoadAvg)))
+		return;
+	//Try and avoid the use of floating point
+	if (2 != sscanf(acLoadAvg,"%u.%u ",&uLoadLastMinInt, &uLoadLastMinDec))
+		return;
 	//Normalize, mapping load to number of LEDs
-	uLoad=(unsigned)(dLoadLastMin*100/15); //This truncates to an integer
+	uLoad=(unsigned)((uLoadLastMinInt*100+uLoadLastMinDec)/15);
 
 	uLoad=(uLoad >= 128) ? 256 : uLoad<<1; //Anything too high will light all LEDs
 
@@ -226,7 +216,7 @@ static void DoLoad(void)
 	if (uLedBits != uLedBitsOld)
 	{
 		uLedBitsOld=uLedBits;
-		SetLeds(LED_LOAD_LO-1+uLedBits);
+		DrvSetLeds(LED_LOAD_LO-1+uLedBits);
 	}
 }
 
@@ -293,7 +283,7 @@ static void DoTraffic(void)
 			lRate=8192/64;  //Anything higher than 8192 packets/second is all LEDs
 		//compute the logarithm of the rate the cheap way
 		//basically, find the highest bit set to 1
-		for (uLedBits=1;lRate>0;uLedBits=uLedBits<<1) //Cheap log function
+		for (uLedBits=1;lRate>0;uLedBits=uLedBits<<1)
 			lRate=lRate>>1;
 		//Apply the style modifyer
 		if (uStackStyle & STACK_LINE)
@@ -301,7 +291,7 @@ static void DoTraffic(void)
 		if (uStackStyle & STACK_BAR)
 			uLedBits--;
 		if (uStackStyle & STACK_RAW)
-			uLedBits=(lAllPackets/64)&0xFF; //This displays the low byte of 64 packet count in binary
+			uLedBits=(lAllPackets/64)&0xFF; //This displays the low byte of 64 packet _count_ (not _rate_) in binary
 		if (uStackStyle & STACK_REVERSE)
 			uLedBits^=0xFF;
 		//Only update LEDs if necessary
@@ -309,7 +299,7 @@ static void DoTraffic(void)
 		{
 			uLedBitsOld=uLedBits;
 			//Use thread-safe LED update
-			SetLeds(LED_TRAFFIC_LO-1+uLedBits);
+			DrvSetLeds(LED_TRAFFIC_LO-1+uLedBits);
 		}
 	}
 	//Set time and count baseline for next run
@@ -325,40 +315,57 @@ static void DoBlink(void)
 
 	//Flip LED_ARMED
 	uStatusLEDs^=LED_ARMED&0x00FF;
-	SetLeds(uStatusLEDs);
+	DrvSetLeds(uStatusLEDs);
+}
+//CLIENT: Helper function to get stuff in text files
+//
+static int GetInFile(const char *acFileName, char *acDest, const unsigned uSize)
+{
+	FILE		*tFile=NULL;
+	int		iReturnVal=-1;
+
+	if (NULL==(tFile=fopen(acFileName,"r")))
+		return 0;
+	if (NULL == fgets(acDest, uSize, tFile))
+		iReturnVal=0;
+	fclose(tFile);
+	return iReturnVal;
 }
 
-//CLIENT: Multithreaded scheduler
-// This function does the infinite loop of wait-run-wait for just one worker
-// This is run by several threads, one for each worker
+//CLIENT: scheduler
+// This function does the infinite loop of wait-run-wait for all workers
 //
-void Scheduler(tExecTable *ptSlice)
+void Scheduler(tExecTable ptWorkTable[], unsigned uCount)
 {
-	struct timespec tReq = { .tv_sec=0, .tv_nsec=0};
+	struct timespec tReq = { .tv_sec=0, .tv_nsec=WRK_WAIT};
 	struct timespec tRem = {.tv_sec=0, .tv_nsec=0};
+	unsigned	u;
 
-	//"infinite" loop, run until global variable changes to 0
+	//Run init code, if present
+	for (u=0;u<uCount;u++)
+		 if (ptWorkTable[u].pfConstr)
+			 (ptWorkTable[u].pfConstr)();
+
+	//loop until global variable changes to 0
 	for (;uKeepGoing;)
 	{
-		//Optional wait before
-		if (ptSlice->lWaitBefore_sec || ptSlice->lWaitBefore_nsec)
-		{
-			tReq.tv_sec=ptSlice->lWaitBefore_sec;
-			tReq.tv_nsec=ptSlice->lWaitBefore_nsec;
-			nanosleep(&tReq,&tRem);
-		}
-		//Worker
-		(*ptSlice->pfCode)();
-		//Optional wait after
-		if (ptSlice->lWaitAfter_sec || ptSlice->lWaitAfter_nsec)
-		{
-			tReq.tv_sec=ptSlice->lWaitAfter_sec;
-			tReq.tv_nsec=ptSlice->lWaitAfter_nsec;
-			nanosleep(&tReq,&tRem);
-		}
+		//Workers
+		for (u=0;u<uCount;u++)
+			if (0 == ptWorkTable[u].uRunningCount)
+			{
+				ptWorkTable[u].uRunningCount=ptWorkTable[u].uSkipCount;
+				(*ptWorkTable[u].pfCode)();
+			}
+			else
+				ptWorkTable[u].uRunningCount--;
+		//Wait a while
+		nanosleep(&tReq,&tRem);
 	}
-	//Terminate this thread
-	pthread_exit(NULL);
+
+	//Cleanup code, if present
+	for (u=0;u<uCount;u++)
+		 if (ptWorkTable[u].pfDestr)
+			 (*ptWorkTable[u].pfDestr)();
 }
 
 //CLIENT: This is the handler for all termination signals.
@@ -372,7 +379,7 @@ void ExitHandler(int iSigNum)
 }
 
 //CLIENT: This is the handler for the USR signals
-// A good place to handle alternatives
+// A good place to handle alternative styles
 //
 void UserHandler(int iSigNum)
 {
@@ -409,36 +416,24 @@ void UserHandler(int iSigNum)
 //
 int main(int nArgc, char **asArgv)
 {
-	unsigned 						u;
-
-	puts("fbled: Firebox III LED Control Daemon");
+	puts(PACKAGE_STRING);
 
 	//Initialize Driver, requires "root"
-	if (DrvInit(DRV_FAST))
+	if (DrvInit(DRV_SLOW))
 	{
 		puts("Cannot Initialize Driver...");
 		return errno;
 	}
-	//Setup handler for all termination signals
-	//These will get called for Control-c, Control-Backslash, or kill
+	//Setup handler for all termination signals (Control-c, Control-Backslash, or kill)
 	signal(SIGINT, ExitHandler);
 	signal(SIGTERM, ExitHandler);
 	signal(SIGQUIT, ExitHandler);
-	//Setup handler for USR1, USR2
-	//This will run on kill -USR1 <pid> or kill -USR2 <pid>
+	//Setup handler for USR1, USR2 "kill -USR1 <pid>, kill -USR2 <pid>"
 	signal(SIGUSR1, UserHandler);
 	signal(SIGUSR2, UserHandler);
-	//Create threads, by default these threads are joinable
-	for (u=0;u<SIZE(tLEDProcTable);u++)
-		pthread_create(&tLEDProcTable[u].tThread, NULL, (void * (*)(void *))&Scheduler, (void *) &tLEDProcTable[u]);
+	//Run the worker scheduler
+	Scheduler(tLEDProcTable,SIZE(tLEDProcTable));
 
-	//At this point, the main thread continues, in addition to the N worker LED threads
-	//Thread policy: simply choose to wait for the worker threads to complete
-	//It is required that joinable threads be joined in order to free up their resources
-	for (u=0;u<SIZE(tLEDProcTable);u++)
-		pthread_join(tLEDProcTable[u].tThread, NULL); //This is a blocking call, only returning when each worker LED thread terminates
-
-	//At this point, all LED threads have completed
 	//Finalize, and turn the DISARMED light on
 	if (DrvEnd(LED_DISARMED))
 	{
