@@ -36,17 +36,18 @@
 //  issue of controlling them. This mapping has been reverse-engineered by Jani Laaksonen.
 //  The short version is that the data port, BASEPORT+0, controls a group of up to 8 LEDs, one LED for each bit.
 //  What group of 8 LEDs the data is for is controlled by the control port, BASEPORT+2. The actual updating of the LEDs is
-//  a 3 steps process:
+//  a 4 steps process:
 //  1.The control port is updated with the LED Group Number
 //  2.The LED data is placed in the data port, 1 bit for each LED
-//  3.Control bit-0 of the control port is then flipped to actually change the LED
+//  3.Control bit-0 of the control port is then flipped to actually change the LED (Firebox III)
+//	4.Control bit-0 of the control port is then flipped again (Firebox II)
 //
 //  The mapping of LED Group to Control bits is:
-//		Group 0, 0x02->0x03, This is for the 4 Status LEDs
-//		Group 1, 0x00->0x01, This is for 8 Load LEDs
-//		Group 2, 0x08->0x09, This is for 8 Traffic LEDs
-//		Group 3, 0x0c->0x0d, This is for part of the triangle (7 LEDs)
-//		Group 4, 0x04->0x05, This is for the rest of the triangle (8 LEDs)
+//		Group 0, 0x02, This is for the 4 Status LEDs
+//		Group 1, 0x00, This is for 8 Load LEDs
+//		Group 2, 0x08, This is for 8 Traffic LEDs
+//		Group 3, 0x0c, This is for part of the triangle (7 LEDs)
+//		Group 4, 0x04, This is for the rest of the triangle (8 LEDs)
 //
 //  Last, there is hardware inversion for bits 1011, so these bits need to be flipped.
 //                      See http://en.wikipedia.org/wiki/Parallel_port
@@ -55,7 +56,6 @@
 //            be lit up individually, there is no "stack" concept in hardware. It all need to be built in the code.
 //  Note: As is tradition, the Driver is just responsible for offering the means to control the LEDs. It is not responsible for
 //            policy, i.e. what information in what form goes to what LED.
-//  Note: This is a Linux implementation.
 //=============================================================================
 //
 // Client Logic:
@@ -63,12 +63,9 @@
 //  the policies described below. The original policies from the manufacturer are quoted.
 
 //  Disarm: "Red light indicates the Firebox detected an error, shut down its interfaces, and will not forward any packets. Reboot the Firebox."
-//               Idea: ready to poweroff, root file system unmounted
+//               Upon exit, Disarm is lit. It is assumed fbled exits whe the Firebox is ready to poweroff, root file system unmounted
 //  Armed: "Green light indicates the Firebox has been booted and is running."
-//               Idea: WAN has IP address.
-//               Idea: Firewall has at least 1 entry
-//               Idea: the boot process has completed
-//               Idea: flashes to indictate this code is running
+//               Flashes to indictate fbled is running
 //    Sys A: "Indicates that the Firebox is running from its primary user-defined configuration."
 //               Idea: os running off of ramdrive, early boot
 //    Sys B: "Indicates that the Firebox is running from the readonly factory default system area."
@@ -78,25 +75,24 @@
 // Triangle: "Indicates traffic between Firebox interfaces. Green arrows briefly light to indicate allowed traffic
 //                between two interfaces in the direction of the arrows. A red light at a triangle corner indicates 
 //                that the Firebox is denying packets at that interface."
-//                For External, Trusted and Other, off if no link, on if link AND IP address, blink if link, no IP
+//                Corner: The firewall sent a packet to the ULOG target, blink for a bit
 //    Traffic: "A stack of lights that functions as a meter to indicate levels of traffic volume through the 
 //                Firebox. Low volume indicators are green, while high volume indicators are yellow. The display 
 //                updates three times per second. The scale is exponential: the first light represents 64 packets/ 
 //                second, the second light represents 128 packets/second, increasing to the eighth light which 
 //                represents 8,192 packets/second. "
-//                This stack is controlled by /proc/net/dev, with a logarithmic scale.
+//                This stack is controlled by interface packet stats, with a logarithmic scale.
 //     Load: "A stack of lights that functions as a meter to indicate the system load average. The system load 
 //               average is the average number of processes running (not including those in wait states) during 
 //               the last minute. Low average indicators are green, while high average indicators are yellow. The 
 //               display updates three times per second. The scale is exponential with each successive light representing 
 //               a doubling of the load average. The first light represents a load average of 0.15. The most 
 //               significant load factor on a Firebox is the number of proxies running."
-//               This stack is controlled by /proc/loadavg, with a logarithmic scale. The first number is the number of processes
-//               actually using CPU cycles to run during the last minute.
+//               This stack is controlled by Load Average, with a logarithmic scale.
 //
 // Client Architecture
 //               Overall, the client is basically an infinite loop of execution threads with a configurable wait time. The
-//               implementation is based on multi-threading a number of functions (the Do... functions), one per group
+//               implementation is based on running a number of functions (the Do... functions), one per group
 //               of LEDs. The exit condition is the receipt of one of the usual termination signals.
 //=============================================================================
 
@@ -108,6 +104,7 @@
 
 //LED Coding; Control bits in 1 byte followed by Data bits for each LED
 //LED Group 0: Status LEDs, Control Code 2, 0010 xor'ed with 1011 is 1001, 0x09
+#define LED_NO_STATUS	0x0900
 #define LED_DISARMED	0x0901
 #define LED_ARMED			0x0902
 #define LED_SYS_A 			0x0904
@@ -115,10 +112,12 @@
 #define LED_ENABLE		0x0940
 
 //LED Group 1: Load, Control Code 0, 0000 xor'ed with 1011 is 1011, 0x0B
+#define LED_NO_LOAD		0x0B00
 #define LED_LOAD_LO		0x0B01
 #define LED_LOAD_HI		0x0BFF
 
 //LED Group 2: Traffic, Control Code 8, 1000 xor'ed with 1011 is 0011, 0x03
+#define LED_NO_TRAFFIC	0x0300
 #define LED_TRAFFIC_LO	0x0301
 #define LED_TRAFFIC_HI	0x03FF
      
@@ -144,10 +143,10 @@
 //Driver constants
 #define DRV_FAST			0
 #define DRV_SLOW			1
-#define DRV_INIT_WAIT		200000000 //.2 sec
+#define DRV_INIT_WAIT		200000000 //.2 sec in micro seconds
 
 //Workers constants
-#define WRK_WAIT			1000000000L/6	//Base wait time is 1/6 of a sec
+#define WRK_WAIT			1000000L/6	//Base scheduler wait time is 1/6 of a sec
 
 #ifndef LED_DEBUG
 //Real Watchguard range
@@ -163,6 +162,16 @@
 #define STACK_RAW			4
 #define STACK_REVERSE	8
 
+//ULOG netlink buffer size
+#define ULOG_RCVBUF		8192
+#define ULOG_TYPE			111		//netlink packet type when payload is from ULOG
+													//From Linux source net/ipv4/netfilter/ipt_ULOG.c
+													//define ULOG_NL_EVENT		111		Harald's favorite number
+
+
+//Number of times to blip the LED on hit from firewall
+#define ULOG_BLIPS			9
+
 //Driver prototypes
 static int DrvInit(unsigned char);
 static int DrvEnd(unsigned);
@@ -170,27 +179,38 @@ static inline void DrvSetLeds(unsigned);
 static void DrvSetLedsWait(unsigned, unsigned long);
 
 //Client Structures
-struct ExecTable
+typedef struct ExecTable
 {
-	void				(*pfConstr)(void);						//Contructor, init code, if needed
-	void 			(*pfCode)(void);					    	//Code to run
-	void				(*pfDestr)(void);							//Destructor, close code, if needed
-	unsigned	uSkipCount;
-	unsigned	uRunningCount;
-};
+	void						(*pfConstr)(void *);						//Contructor, init code, if needed
+	void 					(*pfCode)(void *);					   	//Code to run
+	void						(*pfDestr)(void *);						//Destructor, close code, if needed
+	unsigned			uSkipCount;
+	unsigned			uRunningCount;
+	void						*pExecData;									//Pointer to private data, avoids globals
+} tExecTable;
 
-typedef struct ExecTable tExecTable;
+typedef struct UlogPriv
+{
+	int 				iUlogSocket;
+	unsigned char * pUlogDatagram;
+	unsigned	auDevBlipCount[3];
+} tUlogPriv;
 
 //Client Contants
 
 //Client Prototypes
-static void DoLoad(void);
-static void DoTraffic(void);
-static void DoBlink(void);
+static void DoLoad(void *);
+static void DoTraffic(void *);
+static void DoBlink(void *);
+static void SetupULog(void *);
+static void DoUlog(void *);
+static void CloseUlog(void *);
+static void DoTips(void *);
 static int GetInFile(const char *, char *, const unsigned );
 void Scheduler(tExecTable *, unsigned);
 void ExitHandler(int);
 void UserHandler(int);
+void GetTimeDiff(struct timeval *, struct timeval *, struct timeval *);
 
 //Debugging Assist
 #ifndef LED_DEBUG
@@ -203,4 +223,9 @@ void UserHandler(int);
 #define IOPERM(port, count, yesno) (printf("ioperm(%04X,%u)\n",port,count)==0)
 #endif
 
+//Local macros
 #define SIZE(a) sizeof(a)/sizeof(a[0])
+#define ULMSG_OK(ulh,len) ((len) >= (int)sizeof(ulog_packet_msg_t) && \
+                           (ulh)->data_len <= (len))
+//This is the group mask, listen on ALL ULOG packets, from any group
+#define FBLED_ULOG_GROUP_MASK 0xFFFFFFFF

@@ -1,7 +1,7 @@
 dnl Process this file with autoconf to produce a configure script.
 dnl Created by Anjuta application wizard.
 
-AC_INIT(fbled, 0.1.2.0, fireboxled@gmail.com)
+AC_INIT(fbled, 0.1.3.0, fireboxled@gmail.com)
 
 
 m4_ifdef([AM_SILENT_RULES],[AM_SILENT_RULES([yes])])

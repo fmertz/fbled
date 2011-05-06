@@ -18,7 +18,7 @@ Of direct interest for this project, these boxes feature a front panel with a nu
 of programmable LEDs. The LEDs are grouped in 3 stacks and a triangle. There is
 a stack for specific statuses (SYS A, SYS B, ARMED, DISARMED and POWER), a stack
 of 8 LEDs for LOAD and another stack of 8 LEDs for Traffic. The Triangle (meant to
-have each vertex match an Ethernet port) had LEDs at each vertex, plus 2 LEDs in
+have each vertex for an Ethernet port) has LEDs at each vertex, plus 2 LEDs in
 each direction from all vertices.
 
 These white LEDs can only be controlled as on or off, but can be controlled
@@ -26,12 +26,7 @@ individually. They are already behind colored masks, so they appear colored
 yellow, green or red already.
 
 The idea of the fbled project is to be able to walk up to one of these boxes and
-have a sense of what the machine is up to, generally
-
-	OFF is not applicable
-	ON is normal
-	BLINKING means needs attention
-    BLINKING FAST means needs immediate attention
+have a sense of what the machine is up to.
 
 The code is logically separated into a Driver and a Client. The Driver is
 responsible for updating the LEDs based on input parameters, and deals with
@@ -46,13 +41,10 @@ fbled is meant for the x86 architecture only, but it is less clear what operatin
 system it could run under. Therefore, in the interest of portability across OS,
 this project uses the Autotools, and is basically centered around the GNU C
 Library. The run-time values are gathered with portable code, but invariably
-depend on the specifics of where those values come from. Following the
-"everything is a file" idiom, this code follows the usual user-space interface
-to the system by reading "files" in the /proc or /sys areas. This is an area
-where portability issues are anticipated to crop up.
+depend on the specifics of where those values come from.
 
 fbled is licensed under GPLv3, and is offered to others in the spirit of giving
-a little something back to the free software movement.
+something back to the free software movement.
 
 USAGE:
 fbled just runs. As any user-space process in need of control of individual I/O
@@ -72,21 +64,45 @@ setup so the internal flash drive is set as slave, and a replacement, larger
 capacity primary drive is setup with an image of choice. CompactFlash is easy
 and cheap to setup. Real hard drives could work, too.
 
-A quick search reveals that folks are booting a number of distributions, either
-Linux-based, or BSD-based:
+Folks seem to be using Linux-based or BSD-based distributions:
 
-Linux, with the GNU C Library:
+Linux, with the GNU C Library glibc/libc.so.6:
 	Vyatta
 
-Linux, with the uClibc C Library
+Linux, with the uClibc C Library uclibc/libc.so.1
 	Open-WRT
 	DD-WRT
 
-BSD:
+FreeBSD:
 	pfSense
 	m0n0wall
 
 Folks are encouraged to use the wiki to share their experience and help others
 
                                       https://github.com/fmertz/fbled/wiki
+
+LINUX NOTES:
+Load: From /proc/loadavg.
+Traffic: From /proc/net/dev
+Triangle Tips: Netlink socket to kernel for ULOG messages
+	In order to work, the firewall needs to be modified. When you want to have a
+	triangle tip blink for some condition, the conditions need to be configured in
+	the firewall, and when the conditions match, the packet need to be sent to 
+	ULOG. ULOG then multicasts the packet over netlink, and fbled can get it.
+
+	Example: Blink the triangle tip when someone attempts to login over ssh
+
+			iptables -i INPUT -p tcp --dport 22 -j ULOG --ulog-cprange 1
+
+	Note: This target changes nothing in terms of accepting/rejecting/dropping
+		the packet. ULOG does the job and continues the chain.
+
+Triangle Arrows: <FUTURE> Light up based on the number of connections as
+	per the connections table conntrack.
+
+
+FREEBSD NOTES:
+Load: <FUTURE> getloadavg from the FreeBSD C Library
+Traffic: <FUTURE> getifaddrs from the FreeBSD C Library
+Triangle: <FUTURE> Interface with pf (?)
 

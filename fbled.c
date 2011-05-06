@@ -30,6 +30,7 @@
 //=============================================================================
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/io.h>
@@ -38,19 +39,34 @@
 #include <time.h>
 #include <signal.h>
 #include <features.h>
-
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/uio.h>
+#include <sys/times.h>
+#include <asm/types.h>
+#include <linux/netlink.h>
+#include <net/if.h>
+#include <linux/netfilter_ipv4/ipt_ULOG.h>
 //#define LED_DEBUG
 #include "fbled.h"
 #include "config.h"
+
+//Place to put variables to be shared between the ULOG workers
+static tUlogPriv			tUlogPrivData =
+{	.iUlogSocket = -1,
+ 	.pUlogDatagram = NULL
+};
 
 //This array holds all LED worker functions
 //	Base wait time is defined in WRK_WAIT
 //	All workers are running once every uSkipCount times
 //
 static tExecTable tLEDProcTable[] = {
-	{ .pfConstr=	NULL,	.pfCode=	DoLoad,	.pfDestr=	NULL,	.uSkipCount=	2,	.uRunningCount=	0},
-	{						NULL,					DoTraffic,					NULL,							2,								1},
-	{						NULL,					DoBlink,					NULL,							3,								0}
+	{ .pfConstr=	NULL,	.pfCode=	DoLoad,	.pfDestr=	NULL,	.uSkipCount=	2,	.uRunningCount=	0, .pExecData = 	NULL},
+	{						NULL,					DoTraffic,					NULL,							1,								1,							NULL},
+	{						NULL,					DoBlink,					NULL,							2,								0,							NULL},
+	{						SetupULog,			DoUlog,					CloseUlog,					2,								0,							(void *)&tUlogPrivData},
+	{						NULL,					DoTips,					NULL,							1,								0,							(void *)&tUlogPrivData}
 };
 
 //This is used to control the main loop of workers
@@ -98,9 +114,9 @@ static int DrvInit(unsigned char uMode)
 	if (iRetVal) return iRetVal;
 
 	//Reset all LEDs
-	DrvSetLeds(0x0900);
-	DrvSetLeds(0x0B00);
-	DrvSetLeds(0x0300);
+	DrvSetLeds(LED_NO_STATUS);
+	DrvSetLeds(LED_NO_LOAD);
+	DrvSetLeds(LED_NO_TRAFFIC);
 	DrvSetLeds(0x0700);
 	DrvSetLeds(0x0F00);
 
@@ -112,15 +128,15 @@ static int DrvInit(unsigned char uMode)
 		DrvSetLedsWait(LED_ARMED,DRV_INIT_WAIT);
 		DrvSetLedsWait(LED_SYS_A,DRV_INIT_WAIT);
 		DrvSetLedsWait(LED_SYS_B,DRV_INIT_WAIT);
-		DrvSetLeds(0x0900);
+		DrvSetLeds(LED_NO_STATUS);
 		//One LED at a time for Load LEDs
 		for (u=1; u<256;u*=2)
 			DrvSetLedsWait ((LED_LOAD_LO-1)|u,DRV_INIT_WAIT);
-		DrvSetLeds(0x0B00);
+		DrvSetLeds(LED_NO_LOAD);
 		//One LED at a time for Traffic LEDs
 		for (u=1; u<256;u*=2)
 			DrvSetLedsWait ((LED_TRAFFIC_LO-1)|u,DRV_INIT_WAIT);
-		DrvSetLeds(0x0300);
+		DrvSetLeds(LED_NO_TRAFFIC);
 		//Triangle
 		DrvSetLedsWait(LED_TRUST | LED_EXTRN | LED_OPTNL,DRV_INIT_WAIT);
 		DrvSetLeds(LED_T2E_1 | LED_O2E_1);
@@ -139,17 +155,15 @@ static int DrvInit(unsigned char uMode)
 static int DrvEnd(unsigned uCombo)
 {
 	//Reset all LEDs
-	DrvSetLeds(0x0900);
-	DrvSetLeds(0x0B00);
-	DrvSetLeds(0x0300);
+	DrvSetLeds(LED_NO_STATUS);
+	DrvSetLeds(LED_NO_LOAD);
+	DrvSetLeds(LED_NO_TRAFFIC);
 	DrvSetLeds(0x0700);
 	DrvSetLeds(0x0F00);
 	//Light left on, if needed
 	if (uCombo)
 		DrvSetLeds(uCombo);
 
-	//This may need "root" access, and is done by Linux anyway on exit
-	// may want to consider dropping this call if we change identity
 	return IOPERM(LED_BASEPORT, 3, 0);
 }
 
@@ -175,12 +189,12 @@ static void DrvSetLedsWait(unsigned uCombo, unsigned long ulInterval)
 	DrvSetLeds(uCombo);
 	//Now wait for a while
 	nanosleep(&tReq,&tRem);
-	//Technically, can have time remaining in tRem
+	//Technically, can have time remaining in tRem if signal received. Ignoring it...
 }
 
 //CLIENT: This worker LED function updates the load LEDs based on system load average
 //
-static void DoLoad(void)
+static void DoLoad(void * p)
 {
 	static unsigned uLedBitsOld=0;
 	char					acLoadAvg[256];
@@ -220,9 +234,9 @@ static void DoLoad(void)
 	}
 }
 
-//CLIENT: This worker LED function updates the Traffic LEDs based on /proc/net/dev
+//CLIENT: This worker LED function updates the Traffic LEDs
 //
-static void DoTraffic(void)
+static void DoTraffic(void *p)
 {
 	static unsigned 		uLedBitsOld=0;
 	static long long		lAllPacketsPrior=0;
@@ -237,6 +251,7 @@ static void DoTraffic(void)
 	long							lRate;
 
 	struct timeval				tWhenNow;
+	struct timeval				tWhenDiff;
 
 	unsigned 					uLedBits;
 
@@ -277,7 +292,8 @@ static void DoTraffic(void)
 		//Rate is number of packets since last time divided by time diff since last time
 		//Normalize rate by dividing by 64
 		// 64     packets per second is 1 LED
-		lRate=(lAllPackets-lAllPacketsPrior)*1000000/64/((tWhenNow.tv_sec-tWhenPrior.tv_sec)*1000000+tWhenNow.tv_usec-tWhenPrior.tv_usec);
+		GetTimeDiff (&tWhenPrior, &tWhenNow, &tWhenDiff);
+		lRate=(lAllPackets-lAllPacketsPrior)*1000000/64/(tWhenDiff.tv_sec*1000000+tWhenDiff.tv_usec);
 		// 8192 packets per second and above is 8 LEDs
 		if (lRate > 8192/64)
 			lRate=8192/64;  //Anything higher than 8192 packets/second is all LEDs
@@ -309,7 +325,7 @@ static void DoTraffic(void)
 
 //CLIENT: This worker LED function blinks a LED, heartbeat sort of thing
 //
-static void DoBlink(void)
+static void DoBlink(void *p)
 {
 	static unsigned uStatusLEDs=LED_ARMED | LED_SYS_A;
 
@@ -317,6 +333,215 @@ static void DoBlink(void)
 	uStatusLEDs^=LED_ARMED&0x00FF;
 	DrvSetLeds(uStatusLEDs);
 }
+
+//CLIENT: This is the contructor for the triangle tips LEDs
+//  It sets up the ULOG socket
+void SetupULog(void *p)
+{
+	//  As part of the Linux kernel, the netfilter architecture includes
+	//  the ULOG target. This means that when packets are processed by the
+	//  firewall and are sent down a list of rules in search of a match, there
+	//  can be a target named ULOG. The ULOG target then gets the packet,
+	//  does what it is instructed to do, and then returns the packet to the 
+	//  next rule in the original chain. This is done with iptables, e.g.
+	//
+	//                "iptables -A FORWARD -j ULOG --ulog-nlgroup 32"
+	//
+	//  This rule appends a rule to the FORWARD chain, and the rule simply
+	//  jumps to the ULOG target, with no restriction on the packet (it always
+	//  matches).
+	//  From a design perspective, the kernel modules implement features, and
+	//  it is up the system admin to configure policies. This is done from user-
+	//  space. Therefore, the user-space commands need to communicate the 
+	//  policies to the kernel. For netfilter, this communication is standardized
+	//  in RFC 3549, the netlink protocol.
+	//  When ULOG receives a packet, it then turns around and multicasts this
+	//  packet inside a netlink wrapper, to all user-space clients that have 
+	//  registered to be notified. This multicasting is to be considered as a
+	//  datagram. User-space programs register interest with a group mask.
+	//  Each netfilter rule for ULOG uses a group number as well. As long as 
+	//  a user-space program has a group mask with a bit for the rule group
+	//  number, the program gets notified for all packets caught by the rule.
+	//
+	//  The idea here is to place rules with ULOG targets at whatever place in
+	//  the firewall with iptables. Then, have fbled blip the tips of the triangle
+	//  when a ULOG notification is received over netlink.
+	//
+	//NOTE: This code uses the older ULOG target, and is only available in ipv4.
+	//           A better way would be to use the newer NFLOG target, available
+	//           for both ipv4 and ipv6.
+	//
+	struct sockaddr_nl	tLocalAddress;
+	unsigned				uSize = ULOG_RCVBUF;
+	int							iFlags;
+	tUlogPriv				*ptUlogPrivData;
+
+	ptUlogPrivData = (tUlogPriv *)p;
+	//netlink socket, of the raw sort, with ULOG protocol
+	if (-1 == (ptUlogPrivData->iUlogSocket = socket(PF_NETLINK, SOCK_RAW, NETLINK_NFLOG)))
+		return;
+	//setup the local address
+	tLocalAddress.nl_family = AF_NETLINK;
+	tLocalAddress.nl_pid = getpid();				//No threads, so the main process id is enough
+	tLocalAddress.nl_groups = FBLED_ULOG_GROUP_MASK;	//The group mask
+	tLocalAddress.nl_pad = 0;
+	//Bind the socket to the local address
+	if (-1 == bind(ptUlogPrivData->iUlogSocket,(const struct sockaddr *)&tLocalAddress, sizeof(tLocalAddress)))
+		goto SetupULogErr;
+	//Set receive buffer size
+	if (-1 == setsockopt(ptUlogPrivData->iUlogSocket, SOL_SOCKET, SO_RCVBUF, &uSize, sizeof(uSize)))
+		goto SetupULogErr;
+	//Set the socket as non-blocking. We want to keep fbled single treaded, so we don't want to wait
+	// for packets everytime we read the socket.
+	if (-1 == (iFlags = fcntl(ptUlogPrivData->iUlogSocket, F_GETFL, 0)))
+		goto SetupULogErr;
+	if (-1 == fcntl(ptUlogPrivData->iUlogSocket, F_SETFL, iFlags | O_NONBLOCK))
+		goto SetupULogErr;
+	//Allocate some memory as a receive buffer for datagrams coming through the socket
+	if (NULL == (ptUlogPrivData->pUlogDatagram = (unsigned char *)malloc(ULOG_RCVBUF)))
+		goto SetupULogErr;
+	return;
+	
+SetupULogErr:
+	close(ptUlogPrivData->iUlogSocket);
+	ptUlogPrivData->iUlogSocket = -1;
+}
+
+//CLIENT: This is the worker for the triangle tips LEDs
+//
+void DoUlog(void *p)
+{
+	// This function is responsible for polling the netlink socket for datagrams.
+	// These datagrams are following the general ideas of the network stack,
+	// i.e. each layer keeps adding a header around the higher layer's data,
+	// considered as the payload. Here, when the ULOG target of netfilter is
+	// hit with a packet (because a rule in a chain matched that packet and
+	// jumped to ULOG), ULOG looks at its configuration, and packages only N
+	// bytes of that packet, with N being the --ulog-cprange parameter. Now,
+	// in order to avoid a kernel/user-space switch for every hit, ULOG gathers
+	// P packets, with P being the --ulog-qthreshold parameter. In this
+	// arrangement, ULOG is considered a protocol (like UDP), while netlink
+	// is a protocol family (like IP). So, each N bytes of each packet are the
+	// payload, and this payload is preceded by the ULOG header. Then, each
+	// one of these ULOG packets becomes the payload for netlink, and then
+	// the netlink header is added. This is repeated P times.
+	// The next step is to multicast this group of packets over netlink. This is
+	// a setup where each netfilter rule hit can be told of a group (the --ulog-nlgroup
+	// parameter). That group is made a part of the netlink socket. A ULOG
+	// client like this one can listen to any of these groups.
+	//
+	// The general principle of communication applies: assume nothing about
+	// the compliance of what is received, and be as compliant as possible
+	// for what is sent.
+	//
+	static struct sockaddr_nl	tSenderAddress = {.nl_family = AF_NETLINK,
+																				.nl_pid = 0,
+																				.nl_groups = FBLED_ULOG_GROUP_MASK,
+																				.nl_pad = 0};
+	ssize_t									tSizeRead;
+	socklen_t								tSenderAddressLength = sizeof(tSenderAddress);
+	struct nlmsghdr 					*ptNetlinkHeader;
+	ulog_packet_msg_t				*ptUlogHeader;
+	tUlogPriv							*ptUlogPrivData;
+
+	ptUlogPrivData = (tUlogPriv *)p;
+	//Check the socket handle
+	if (-1 == ptUlogPrivData->iUlogSocket)
+		return;
+	//Check that memory was allocated for the receive buffer
+	//if (NULL == ptUlogPrivData->pUlogDatagram)
+	//	return;
+	//Check the socket is non blocking
+	//if (0 == (O_NONBLOCK & fcntl(ptUlogPrivData->iUlogSocket, F_GETFL, 0)))
+	//	return;	
+	//Check for a netlink datagram
+	if (-1 == (tSizeRead = recvfrom(ptUlogPrivData->iUlogSocket, ptUlogPrivData->pUlogDatagram, ULOG_RCVBUF,
+	                                  0, (struct sockaddr *)&tSenderAddress,  &tSenderAddressLength)))
+		return;	//Some error, including non-blocking (errno == EAGAIN) read
+	//Check datagram
+	if (sizeof(tSenderAddress) != tSenderAddressLength)
+		return;
+	if (   tSenderAddress.nl_pid != 0										//Packet not from the kernel
+		|| tSenderAddress.nl_family != AF_NETLINK 					//Not a netlink packet
+		|| 0 == ((1 << (tSenderAddress.nl_groups-1)) & FBLED_ULOG_GROUP_MASK))	//Not from a group we subscribed to
+		return;	//Not what we expected
+	//Now, look at content of netlink datagram, have to pay attention to alignment, so we use macros
+	for ( ptNetlinkHeader = (struct nlmsghdr *)ptUlogPrivData->pUlogDatagram;
+	     	//Make sure the netlink packet passes sanity check
+	     	NLMSG_OK(ptNetlinkHeader,tSizeRead) &&
+	  		//In case multiple netlink packets are sent, the last one is DONE
+	     	//NLMSG_DONE != ptNetlinkHeader->nlmsg_type;
+	     	//Check that the type indicates the payload is from ULOG
+	     	ULOG_TYPE == ptNetlinkHeader->nlmsg_type;
+	     	//Update the netlink header pointer to the next one
+	     	ptNetlinkHeader = NLMSG_NEXT(ptNetlinkHeader,tSizeRead))
+		{
+			//At this point, we have isolated a proper netlink packet, maybe one of several,
+			// and the data part of the netlink packet is a ULOG packet
+			ptUlogHeader = (ulog_packet_msg_t *)NLMSG_DATA(ptNetlinkHeader);
+			//Make sure the ULOG packet passes sanity check
+			if (ULMSG_OK(ptUlogHeader,ptNetlinkHeader->nlmsg_len - NLMSG_HDRLEN))
+			{
+				if (0 == memcmp(ptUlogHeader->indev_name,"eth0",4) || 0 == memcmp(ptUlogHeader->outdev_name,"eth0",4))
+					ptUlogPrivData->auDevBlipCount[0] = ULOG_BLIPS;
+				if (0 == memcmp(ptUlogHeader->indev_name,"eth1",4) || 0 == memcmp(ptUlogHeader->outdev_name,"eth1",4))
+					ptUlogPrivData->auDevBlipCount[1] = ULOG_BLIPS;
+				if (0 == memcmp(ptUlogHeader->indev_name,"eth2",4) || 0 == memcmp(ptUlogHeader->outdev_name,"eth2",4))
+					ptUlogPrivData->auDevBlipCount[2] = ULOG_BLIPS;
+			}
+		}
+}
+
+//CLIENT: This is the destructor for the triangle tips LEDs
+//
+void CloseUlog(void *p)
+{
+	tUlogPriv		*ptUlogPrivData;
+
+	ptUlogPrivData = (tUlogPriv *)p;
+	if (-1 == ptUlogPrivData->iUlogSocket)
+		return;
+	free(ptUlogPrivData->pUlogDatagram);
+	close(ptUlogPrivData->iUlogSocket);
+}
+
+//CLIENT: This worker LED blips the triangle tips
+//
+void DoTips(void *p)
+{
+	static unsigned 	uTipLEDs = 0;
+	tUlogPriv				*ptUlogPrivData;
+
+	ptUlogPrivData = (tUlogPriv *)p;
+	if (uTipLEDs)
+	{
+		//Transition LEDs from on to off
+		uTipLEDs = 0;
+		DrvSetLeds(0x0700);
+	}
+	else
+	{
+		//Transition from off to on?
+		if (ptUlogPrivData->auDevBlipCount[0])
+		{
+			ptUlogPrivData->auDevBlipCount[0]--;
+			uTipLEDs |=  LED_EXTRN;
+		}
+		if (ptUlogPrivData->auDevBlipCount[1])
+		{
+			ptUlogPrivData->auDevBlipCount[1]--;
+			uTipLEDs |=  LED_TRUST;
+		}
+		if (ptUlogPrivData->auDevBlipCount[2])
+		{
+			ptUlogPrivData->auDevBlipCount[2]--;
+			uTipLEDs |=  LED_OPTNL;
+		}
+		if (uTipLEDs)
+			DrvSetLeds(uTipLEDs);
+	}
+}
+
 //CLIENT: Helper function to get stuff in text files
 //
 static int GetInFile(const char *acFileName, char *acDest, const unsigned uSize)
@@ -332,40 +557,77 @@ static int GetInFile(const char *acFileName, char *acDest, const unsigned uSize)
 	return iReturnVal;
 }
 
+//UTIL: time difference
+//
+void GetTimeDiff(
+	struct timeval 	*ptFro,
+    struct timeval 	*ptTo,
+    struct timeval		*ptWait)
+{
+	int	iSec;
+	
+	if (ptTo->tv_usec < ptFro->tv_usec)
+	{
+	 	iSec = (ptFro->tv_usec - ptTo->tv_usec) / 1000000 + 1;
+	 	ptFro->tv_usec -= 1000000 * iSec;
+	 	ptFro->tv_sec += iSec;
+	}
+	if (ptTo->tv_usec - ptFro->tv_usec > 1000000)
+	{
+	 	iSec = (ptTo->tv_usec - ptFro->tv_usec) / 1000000;
+	 	ptFro->tv_usec += 1000000 * iSec;
+	 	ptFro->tv_sec -= iSec;
+	}
+	ptWait->tv_sec = ptTo->tv_sec - ptFro->tv_sec;
+	ptWait->tv_usec = ptTo->tv_usec - ptFro->tv_usec;
+}
+
 //CLIENT: scheduler
 // This function does the infinite loop of wait-run-wait for all workers
 //
 void Scheduler(tExecTable ptWorkTable[], unsigned uCount)
 {
-	struct timespec tReq = { .tv_sec=0, .tv_nsec=WRK_WAIT};
-	struct timespec tRem = {.tv_sec=0, .tv_nsec=0};
-	unsigned	u;
+	struct timespec	tReq;
+	struct timespec	tRem = {.tv_sec=0, .tv_nsec=0};
+	struct timeval		tBeginWorkers;
+	struct timeval		tEndWorkers;
+	struct timeval		tDiff;
+	unsigned			u;
 
 	//Run init code, if present
 	for (u=0;u<uCount;u++)
 		 if (ptWorkTable[u].pfConstr)
-			 (ptWorkTable[u].pfConstr)();
+			 (ptWorkTable[u].pfConstr)(ptWorkTable[u].pExecData);
 
 	//loop until global variable changes to 0
 	for (;uKeepGoing;)
 	{
+		//Get a time stamp, in calendar time
+		gettimeofday(&tBeginWorkers, NULL);
 		//Workers
 		for (u=0;u<uCount;u++)
 			if (0 == ptWorkTable[u].uRunningCount)
 			{
 				ptWorkTable[u].uRunningCount=ptWorkTable[u].uSkipCount;
-				(*ptWorkTable[u].pfCode)();
+				(*ptWorkTable[u].pfCode)(ptWorkTable[u].pExecData);
 			}
 			else
 				ptWorkTable[u].uRunningCount--;
-		//Wait a while
-		nanosleep(&tReq,&tRem);
+		//Get another time stamp, in calendar time
+		gettimeofday(&tEndWorkers, NULL);
+		//Wait a while, for the difference between base tick time and actual elapsed time
+		GetTimeDiff(&tBeginWorkers, &tEndWorkers, &tDiff);
+		if (0 == tDiff.tv_sec && tDiff.tv_usec < WRK_WAIT)
+		{
+			tReq.tv_sec = tDiff.tv_sec;
+			tReq.tv_nsec = (WRK_WAIT - tDiff.tv_usec)*1000; //Correct for micro seconds to nano seconds
+			nanosleep(&tReq,&tRem);
+		}
 	}
-
 	//Cleanup code, if present
 	for (u=0;u<uCount;u++)
 		 if (ptWorkTable[u].pfDestr)
-			 (*ptWorkTable[u].pfDestr)();
+			 (*ptWorkTable[u].pfDestr)(ptWorkTable[u].pExecData);
 }
 
 //CLIENT: This is the handler for all termination signals.
@@ -383,7 +645,9 @@ void ExitHandler(int iSigNum)
 //
 void UserHandler(int iSigNum)
 {
-	//For USR1 and USR2, flip styles
+	struct tms tCPUTicks;
+
+	//For USR1 and USR2
 	switch (iSigNum)
 	{
 		case SIGUSR1:
@@ -408,7 +672,9 @@ void UserHandler(int iSigNum)
 			//break;
 			
 		case SIGUSR2:
-			uStackStyle^=STACK_REVERSE;
+			//uStackStyle^=STACK_REVERSE;
+			times(&tCPUTicks);
+			printf("CPU Utilization: user = %lu sys = %lu\n", tCPUTicks.tms_utime, tCPUTicks.tms_stime);
 	}
 }
 
@@ -416,6 +682,8 @@ void UserHandler(int iSigNum)
 //
 int main(int nArgc, char **asArgv)
 {
+	struct tms tCPUStats;
+	
 	puts(PACKAGE_STRING);
 
 	//Initialize Driver, requires "root"
@@ -440,5 +708,9 @@ int main(int nArgc, char **asArgv)
 		puts("Cannot Finalize Driver...");
 		return errno;
 	}
+	//Print out some CPU usage
+	times(&tCPUStats);
+	printf("CPU Utilization: user = %lu, sys = %lu\n",tCPUStats.tms_utime, tCPUStats.tms_stime);
+	
 	return 0;
 }
