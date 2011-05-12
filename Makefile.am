@@ -15,4 +15,11 @@ fbled_SOURCES = \
 	fbled.c \
 	fbled.h
 
-fbled_LDFLAGS = 
+fbled_LDADD =
+
+if BUILD_WITH_LIB_PCAP
+fbled_LDADD += -lpcap
+endif
+
+fbled_LDFLAGS =
+

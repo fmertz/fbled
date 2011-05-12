@@ -100,7 +100,6 @@
 #define LED_BASEPORT	0x378
 #define LED_DATA			(LED_BASEPORT+0)
 #define LED_CONTROL		(LED_BASEPORT+2)
-#define LED_WAITPORT		0x80 //This is used when using the "slow" outb_p
 
 //LED Coding; Control bits in 1 byte followed by Data bits for each LED
 //LED Group 0: Status LEDs, Control Code 2, 0010 xor'ed with 1011 is 1001, 0x09
@@ -146,14 +145,18 @@
 #define DRV_INIT_WAIT		200000000 //.2 sec in micro seconds
 
 //Workers constants
+#ifdef LED_DEBUG
+#define WRK_WAIT           1000000L/2   //Debug base timer is 1/2 sec
+#else
 #define WRK_WAIT			1000000L/6	//Base scheduler wait time is 1/6 of a sec
+#endif
 
 #ifndef LED_DEBUG
-//Real Watchguard range
-#define WATCHGUARD_OUI "00:90:7f"
+//Real Watchguard range 00:90:7F
+#define WATCHGUARD_OUI "\000\0220\0177"
 #else
-//Virtualbox range
-#define WATCHGUARD_OUI "08:00:27"
+//Virtualbox range 08:00:27
+#define WATCHGUARD_OUI "\010\000\047"
 #endif
 
 //Stack styles for Traffic and load modifyer
@@ -162,20 +165,30 @@
 #define STACK_RAW			4
 #define STACK_REVERSE	8
 
+//Number of times to blip the LED on hit from firewall
+#define FBLED_BLIPS		9
+
+#if HAVE_LINUX_NETLINK_H && HAVE_LINUX_NETFILTER_IPV4_IPT_ULOG_H
 //ULOG netlink buffer size
 #define ULOG_RCVBUF		8192
 #define ULOG_TYPE			111		//netlink packet type when payload is from ULOG
 													//From Linux source net/ipv4/netfilter/ipt_ULOG.c
 													//define ULOG_NL_EVENT		111		Harald's favorite number
+//Basic sanity check on packets from ULOG
+#define ULMSG_OK(ulh,len) ((len) >= (int)sizeof(ulog_packet_msg_t) && \
+                           (ulh)->data_len <= (len))
+//This is the group mask, listen on ALL ULOG packets, from any group
+#define FBLED_ULOG_GROUP_MASK 0xFFFFFFFF
+#endif
 
-
-//Number of times to blip the LED on hit from firewall
-#define ULOG_BLIPS			9
+#if  HAVE_NET_IF_PFLOG_H && HAVE_PCAP_PCAP_H
+#define PCAP_DEVICE "pflog0"
+#endif
 
 //Driver prototypes
 static int DrvInit(unsigned char);
 static int DrvEnd(unsigned);
-static inline void DrvSetLeds(unsigned);
+static void DrvSetLeds(unsigned);
 static void DrvSetLedsWait(unsigned, unsigned long);
 
 //Client Structures
@@ -189,43 +202,101 @@ typedef struct ExecTable
 	void						*pExecData;									//Pointer to private data, avoids globals
 } tExecTable;
 
-typedef struct UlogPriv
+typedef struct Priv
 {
-	int 				iUlogSocket;
+	unsigned	        auDevBlipCount[3];
+#if HAVE_LINUX_NETLINK_H && HAVE_LINUX_NETFILTER_IPV4_IPT_ULOG_H
+	int 				        iUlogSocket;
 	unsigned char * pUlogDatagram;
-	unsigned	auDevBlipCount[3];
-} tUlogPriv;
-
-//Client Contants
+#else
+#if  HAVE_NET_IF_PFLOG_H && HAVE_PCAP_PCAP_H
+    pcap_t                  *ptPCap;
+#endif
+#endif
+} tPriv;
 
 //Client Prototypes
 static void DoLoad(void *);
-static void DoTraffic(void *);
 static void DoBlink(void *);
-static void SetupULog(void *);
-static void DoUlog(void *);
-static void CloseUlog(void *);
+static void DoTraffic(void *);
 static void DoTips(void *);
+static void SetupTips(void *);
+static void GetTips(void *);
+static void CloseTips(void *);
+#if HAVE_PCAP_PCAP_H && HAVE_NET_IF_PFLOG_H
+void HandlePCap(u_char *, const struct pcap_pkthdr *, const u_char *);
+#endif
+#if defined(__linux__) && !HAVE_GETLOADAVG
 static int GetInFile(const char *, char *, const unsigned );
+#endif
+#if defined(__linux__) && !HAVE_GETIFADDRS
+static long GetPacketCount(void);
+#endif
 void Scheduler(tExecTable *, unsigned);
 void ExitHandler(int);
 void UserHandler(int);
 void GetTimeDiff(struct timeval *, struct timeval *, struct timeval *);
 
-//Debugging Assist
 #ifndef LED_DEBUG
 //Run-time version of low-level io routines
-#define OUTB(port,val) outb((port),(val))
+#ifdef __linux__
+#define OUTB(val,port) outb((val),(port))
+#endif
+#ifdef __FreeBSD__
+#define OUTB(val, port) outb((port),(val))
+#endif
+#if HAVE_IOPERM
 #define IOPERM(port, count, yesno) ioperm((port), (count), (yesno))
-#else
+#endif
+#if HAVE_I386_SET_IOPERM
+#define IOPERM(port, count, mask) i386_set_ioperm((port), (count), (mask))
+#endif
+#else /*LED_DEBUG*/
 //Debug version of low-level routines
-#define OUTB(val,port) printf("outb(%04X,%02X)\n",port,val)
-#define IOPERM(port, count, yesno) (printf("ioperm(%04X,%u)\n",port,count)==0)
+void DrvEmu(u_int, u_char);
+u_char DrvEmuBitsToChar(u_char, char *);
+#define OUTB(val,port) DrvEmu(port,val)
+#define IOPERM(port, count, yesno) 0
+#endif /*LED_DEBUG*/
+
+//Deal with results of getifaddrs()
+#if HAVE_GETIFADDRS
+#ifdef AF_PACKET
+#define AF_MAC	AF_PACKET
+#else
+#ifdef	AF_LINK
+#define AF_MAC	AF_LINK
+#else
+#error "No address family for getifaddrs"
+#endif
+#endif
+#if HAVE_STRUCT_SOCKADDR_LL_SLL_ADDR
+#define MAC_BITS(addrs) ((struct sockaddr_ll *)addrs)->sll_addr
+#else
+#if HAVE_STRUCT_SOCKADDR_DL_SDL_DATA && HAVE_STRUCT_SOCKADDR_DL_SDL_NLEN
+#define MAC_BITS(addrs) ((struct sockaddr_dl *)addrs)->sdl_data+((struct sockaddr_dl *)addrs)->sdl_nlen
+#else
+#error "No structure to get getifaddrs local link/data link address"
+#endif
+#endif
+#if HAVE_STRUCT_RTNL_LINK_STATS_RX_PACKETS && HAVE_STRUCT_RTNL_LINK_STATS_TX_PACKETS
+#define INOUT_PACKETS(x) ((struct rtnl_link_stats *)(x))->rx_packets + ((struct rtnl_link_stats *)(x))->tx_packets
+#else
+#if HAVE_STRUCT_IF_DATA_IFI_IPACKETS && HAVE_STRUCT_IF_DATA_IFI_OPACKETS
+#define INOUT_PACKETS(x)	((struct if_data *)(x))->ifi_ipackets + ((struct if_data *)(x))->ifi_opackets
+#else
+#error "No structure to get getifaddrs packet count"
+#endif
+#endif
+#endif /*HAVE_GETIFADDRS*/
+
+#ifdef __linux__
+#define ETHDEV "eth"
+#endif
+#ifdef __FreeBSD__
+#define ETHDEV "dc"
 #endif
 
 //Local macros
 #define SIZE(a) sizeof(a)/sizeof(a[0])
-#define ULMSG_OK(ulh,len) ((len) >= (int)sizeof(ulog_packet_msg_t) && \
-                           (ulh)->data_len <= (len))
-//This is the group mask, listen on ALL ULOG packets, from any group
-#define FBLED_ULOG_GROUP_MASK 0xFFFFFFFF
+

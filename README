@@ -39,9 +39,13 @@ From a development perspective, a choice was made early on to make it
 available for others to use, study and hopefully contribute. It is clear that
 fbled is meant for the x86 architecture only, but it is less clear what operating
 system it could run under. Therefore, in the interest of portability across OS,
-this project uses the Autotools, and is basically centered around the GNU C
-Library. The run-time values are gathered with portable code, but invariably
-depend on the specifics of where those values come from.
+this project uses the Autotools. The idea is to have just one code base, and
+be able to compile it under various combinations of operating system versions
+and even different C libraries for various kernels. This is the part where it is
+discovered that functions behave somewhat differently, whatever functions
+return is structured differently, and the definitions needed to achieve the
+result are placed in header files whose location vary. A great number of hours
+are spent in the airgap between the meanings of similar and identical.
 
 fbled is licensed under GPLv3, and is offered to others in the spirit of giving
 something back to the free software movement.
@@ -66,7 +70,7 @@ and cheap to setup. Real hard drives could work, too.
 
 Folks seem to be using Linux-based or BSD-based distributions:
 
-Linux, with the GNU C Library glibc/libc.so.6:
+Linux, with the GNU C Library glibc(or eglibc)/libc.so.6:
 	Vyatta
 
 Linux, with the uClibc C Library uclibc/libc.so.1
@@ -82,8 +86,8 @@ Folks are encouraged to use the wiki to share their experience and help others
                                       https://github.com/fmertz/fbled/wiki
 
 LINUX NOTES:
-Load: From /proc/loadavg.
-Traffic: From /proc/net/dev
+Load: getloadavg() from the C library, except uClibc reads from /proc/loadavg.
+Traffic: getifaddrs() from the C library.
 Triangle Tips: Netlink socket to kernel for ULOG messages
 	In order to work, the firewall needs to be modified. When you want to have a
 	triangle tip blink for some condition, the conditions need to be configured in
@@ -92,7 +96,7 @@ Triangle Tips: Netlink socket to kernel for ULOG messages
 
 	Example: Blink the triangle tip when someone attempts to login over ssh
 
-			iptables -i INPUT -p tcp --dport 22 -j ULOG --ulog-cprange 1
+			iptables -I INPUT -p tcp --dport 22 -j ULOG --ulog-cprange 1
 
 	Note: This target changes nothing in terms of accepting/rejecting/dropping
 		the packet. ULOG does the job and continues the chain.
@@ -102,7 +106,7 @@ Triangle Arrows: <FUTURE> Light up based on the number of connections as
 
 
 FREEBSD NOTES:
-Load: <FUTURE> getloadavg from the FreeBSD C Library
-Traffic: <FUTURE> getifaddrs from the FreeBSD C Library
+Load: getloadavg from the FreeBSD C Library
+Traffic: getifaddrs from the FreeBSD C Library
 Triangle: <FUTURE> Interface with pf (?)
 

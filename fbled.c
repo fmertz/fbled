@@ -19,60 +19,120 @@
 //  Copyright  2011  F Mertz
 //  <fireboxled@gmail.com>
 //
-// This project aims at providing a simple deamon to update the front LEDs on a Watchguard Firebox II/III. This code is
-// logically separated into a Driver and a Client.
-//
-// The Driver is responsible for updating the LEDs based on input parameters, and deals with low-level I/O ports.
-// This driver might be reimplemented as a real Linux driver/module at a later point.
-//
-// The Client is responsible for gathering the live values from the running system, parse them, normalize them, then pass them
-// to the Driver.
+// This project aims at providing a simple deamon to update the front LEDs on a Watchguard Firebox II/III.
 //=============================================================================
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <string.h>
-#include <sys/types.h>
-#include <sys/io.h>
-#include <sys/time.h>
-#include <errno.h>
-#include <time.h>
-#include <signal.h>
-#include <features.h>
-#include <fcntl.h>
-#include <sys/socket.h>
-#include <sys/uio.h>
-#include <sys/times.h>
-#include <asm/types.h>
-#include <linux/netlink.h>
-#include <net/if.h>
-#include <linux/netfilter_ipv4/ipt_ULOG.h>
-//#define LED_DEBUG
-#include "fbled.h"
 #include "config.h"
 
-//Place to put variables to be shared between the ULOG workers
-static tUlogPriv			tUlogPrivData =
-{	.iUlogSocket = -1,
- 	.pUlogDatagram = NULL
-};
+#include <stdio.h>
+#if HAVE_STDLIB_H
+#include <stdlib.h>
+#endif
+#if HAVE_UNISTD_H
+#include <unistd.h>
+#endif
+#if HAVE_STRING_H
+#include <string.h>
+#endif
+#if HAVE_SYS_TYPES_H
+#include <sys/types.h>
+#endif
+#if HAVE_TIME_H
+#include <time.h>
+#endif
+#if HAVE_SIGNAL_H
+#include <signal.h>
+#endif
+#if HAVE_FCNTL_H
+#include <fcntl.h>
+#endif
+#if HAVE_SYS_SOCKET_H
+#include <sys/socket.h>
+#endif
+#if HAVE_ERRNO_H
+#include <errno.h>
+#endif
+#if HAVE_SYS_TIME_H
+#include <sys/time.h>
+#endif
+#if HAVE_IFADDRS_H
+#include <ifaddrs.h>
+#endif
+#if HAVE_FEATURES_H
+#include <features.h>
+#endif
+#if HAVE_SYS_IO_H
+#include <sys/io.h>
+#endif
+#if HAVE_SYS_UIO_H
+#include <sys/uio.h>
+#endif
+#if HAVE_SYS_TIMES_H
+#include <sys/times.h>
+#endif
+#if HAVE_ASM_TYPES_H
+#include <asm/types.h>
+#endif
+#if HAVE_LINUX_NETLINK_H
+#include <linux/netlink.h>
+#endif
+#if HAVE_LINUX_NETDEVICE_H
+#include <linux/netdevice.h>
+#endif
+#if HAVE_LINUX_NETFILTER_IPV4_IPT_ULOG_H
+#include <linux/netfilter_ipv4/ipt_ULOG.h>
+#endif
+#if HAVE_LINUX_IF_H
 
+#elif HAVE_NET_IF_H
+# include <net/if.h>
+#endif
+#if HAVE_LINUX_IF_LINK_H
+#include <linux/if_link.h>
+#endif
+#if HAVE_MACHINE_SYSARCH_H
+#include <machine/sysarch.h>
+#endif
+#if HAVE_MACHINE_CPUFUNC_H
+#include <machine/cpufunc.h>
+#endif
+#if HAVE_NET_IF_DL_H
+#include <net/if_dl.h>
+#endif
+#if HAVE_PCAP_PCAP_H
+#include <pcap/pcap.h>
+#endif
+#if HAVE_NET_IF_PFLOG_H
+#include <net/if_pflog.h>
+#endif
+//This bypasses the LED hardware and uses the text emulator
+//#define LED_DEBUG
+#include "fbled.h"
+
+//Place to put variables to be shared between the workers
+static tPriv			tPrivData =
+{
+#if HAVE_LINUX_NETFILTER_IPV4_IPT_ULOG_H
+    .iUlogSocket = -1,
+ 	.pUlogDatagram = NULL
+#else
+#if  HAVE_NET_IF_PFLOG_H && HAVE_PCAP_PCAP_H
+    .ptPCap = NULL
+#endif
+#endif
+};
 //This array holds all LED worker functions
 //	Base wait time is defined in WRK_WAIT
 //	All workers are running once every uSkipCount times
 //
 static tExecTable tLEDProcTable[] = {
-	{ .pfConstr=	NULL,	.pfCode=	DoLoad,	.pfDestr=	NULL,	.uSkipCount=	2,	.uRunningCount=	0, .pExecData = 	NULL},
-	{						NULL,					DoTraffic,					NULL,							1,								1,							NULL},
-	{						NULL,					DoBlink,					NULL,							2,								0,							NULL},
-	{						SetupULog,			DoUlog,					CloseUlog,					2,								0,							(void *)&tUlogPrivData},
-	{						NULL,					DoTips,					NULL,							1,								0,							(void *)&tUlogPrivData}
+	 { .pfConstr=	NULL,	.pfCode=	DoLoad,	.pfDestr=	NULL,	.uSkipCount=	2,	.uRunningCount=	0, .pExecData = 	NULL}
+	,{						NULL,					DoBlink,					NULL,							2,								    0,							NULL}
+	,{						NULL,					DoTraffic,					NULL,							1,								    1,							NULL}
+	,{						SetupTips,			GetTips,					CloseTips,					2,								    0,							(void *)&tPrivData}
+	,{						NULL,					DoTips,					NULL,							1,								    0,							(void *)&tPrivData}
 };
 
-//This is used to control the main loop of workers
-// The worker LED threads will read it, the signal handler can change it
-// Turn-off any optimization by the compiler by declaring it volatile
-//
+//This is used to control the main loop of workers, the signal handler can change it
 static unsigned volatile uKeepGoing=1;
 
 //This is used for stck style
@@ -82,36 +142,34 @@ static unsigned uStackStyle=STACK_BAR;
 //
 static int DrvInit(unsigned char uMode)
 {
-	int 				iRetVal;
-	unsigned	u;
-	char			cEthNum;
-	FILE				*tEthFile=NULL;
-	char			acMACAddress[256];
-	char			acFileName[256];
-
+	int 				            iRetVal;
+	unsigned	            u;
+#if HAVE_GETIFADDRS
+    struct ifaddrs          *pIfAddrs;
+    struct ifaddrs          *pThisIfAddrs;
+#endif
+	
 	//Try and find out if this code is running on a Firebox
-	//Look at the MAC addresses of eth0-4 and see if at least 1 is part of the Watchguard range
-	for (cEthNum='0';cEthNum!='5';cEthNum++)
-	{
-		snprintf(acFileName,sizeof(acFileName),"/sys/class/net/eth%c/address",cEthNum);
-		if (NULL==(tEthFile=fopen(acFileName,"r")))
-			continue;
-		if (fgets(acMACAddress,sizeof(acMACAddress), tEthFile))
-		{
-			fclose(tEthFile);
-			if (0 == memcmp(acMACAddress,WATCHGUARD_OUI,sizeof(WATCHGUARD_OUI)-1))
-				//Found one, but no guarantee it is a Firebox II or III 
-				break;
-		}
-	}
-	//if ('5' == cEthNum)
-		//Did not find a Watchguard OUI
-		//return -1;
-	//In order to make direct use of I/O ports from user space, access has to be requested
-	// Tutorial: http://www.faqs.org/docs/Linux-mini/IO-Port-Programming.html
-	// This needs "root" permission to succeed
+	//Look at the MAC address and see if at least 1 is part of the Watchguard range
+#if HAVE_GETIFADDRS
+    if (0 == getifaddrs(&pIfAddrs))
+    {
+        for (pThisIfAddrs=pIfAddrs;pThisIfAddrs; pThisIfAddrs=pThisIfAddrs->ifa_next)
+            if (pThisIfAddrs->ifa_addr && AF_MAC == pThisIfAddrs->ifa_addr->sa_family)
+                if (0 == memcmp(MAC_BITS(pThisIfAddrs->ifa_addr),WATCHGUARD_OUI,sizeof(WATCHGUARD_OUI)-1))
+					break;
+		freeifaddrs(pIfAddrs);
+    }
+    if (NULL == pThisIfAddrs)
+        //Did not find a Watchguard OUI
+        //return -1;
+		;
+#endif
+	//Request access to i/o ports
+	// Linux Tutorial: http://www.faqs.org/docs/Linux-mini/IO-Port-Programming.html
 	iRetVal = IOPERM(LED_BASEPORT, 3, 255);
-	if (iRetVal) return iRetVal;
+	if (iRetVal)
+		return iRetVal;
 
 	//Reset all LEDs
 	DrvSetLeds(LED_NO_STATUS);
@@ -122,7 +180,6 @@ static int DrvInit(unsigned char uMode)
 
 	if (DRV_SLOW == uMode)
 	{
-		//Init time animation
 		//One LED at a time for Status LEDs
 		DrvSetLedsWait(LED_DISARMED,DRV_INIT_WAIT);
 		DrvSetLedsWait(LED_ARMED,DRV_INIT_WAIT);
@@ -170,7 +227,7 @@ static int DrvEnd(unsigned uCombo)
 //DRIVER: Actually set the LEDs
 //  No buffer, no validation
 //
-static inline void DrvSetLeds(unsigned uCombo)
+static void DrvSetLeds(unsigned uCombo)
 {
 	//uCombo is Group# and bits in 2 bytes
 	OUTB((uCombo&0x00FF)^0xFF, LED_DATA);	//Put data for the LEDs, after inversion (bit at 1 means LED is "off")
@@ -192,19 +249,77 @@ static void DrvSetLedsWait(unsigned uCombo, unsigned long ulInterval)
 	//Technically, can have time remaining in tRem if signal received. Ignoring it...
 }
 
+//DRIVER: Emulate LED panel
+//
+#ifdef LED_DEBUG
+void DrvEmu(u_int uPort, u_char cData)
+{
+    static u_char cLoad=0, cTraffic=0, cStatus=0, cTriangle=0, cBits=0, cStrobe=0;
+    static char acLoad[9]="........", acTraffic[9]="........", acStatus[9]="........", acTriangle[9]="........";
+
+    if (LED_DATA == uPort)
+    {
+        cBits=cData;
+        return;
+    }
+    if (LED_CONTROL == uPort && cData & 0x01)
+    {
+        cStrobe = 1;
+        cStatus = (LED_NO_STATUS>>8) == cData ? DrvEmuBitsToChar(cBits,acStatus) : cStatus;
+        cLoad = (LED_NO_LOAD>>8) == cData ? DrvEmuBitsToChar(cBits,acLoad) : cLoad;
+        cTraffic = (LED_NO_TRAFFIC>>8)  == cData ? DrvEmuBitsToChar(cBits,acTraffic) : cTraffic;
+        cTriangle = 0x07 == cData ? DrvEmuBitsToChar(cBits,acTriangle) : cTriangle;
+    }
+    if (LED_CONTROL == uPort && 0 == (cData & 0x01))
+    {
+        cStrobe = 0;
+        printf("S[%s] L[%s] T[%s] 3[%s]\r",acStatus, acLoad, acTraffic, acTriangle);
+        fflush(stdout);
+    }
+}
+#endif
+//Driver: Emulator Bits to Chars
+//
+#ifdef LED_DEBUG
+u_char DrvEmuBitsToChar(u_char cData, char *pStr)
+{
+    unsigned u;
+
+    for (u=0;u<8;u++)
+        if ((cData>>u) & 0x01)
+            pStr[u] = '.';
+        else
+            pStr[u] = '*';
+    pStr[8]= '\0';
+    
+    return cData;
+}
+#endif
 //CLIENT: This worker LED function updates the load LEDs based on system load average
 //
 static void DoLoad(void * p)
 {
 	static unsigned uLedBitsOld=0;
+#if HAVE_GETLOADAVG
+    double                dLoadLastMin;
+#else
+#ifdef __linux__
 	char					acLoadAvg[256];
 	unsigned			uLoadLastMinInt;
 	unsigned			uLoadLastMinDec;
+#else
+#error "No input method found for LOAD"
+#endif
+#endif
 	unsigned 			uLoad;
 	unsigned 			uLedBits;
 	
 	//Only get 1st number, load avg in last min
-	//getloadavg(&dLoadLastMin, 1); //uClibc does not have this
+#if HAVE_GETLOADAVG
+	getloadavg(&dLoadLastMin, 1);
+    uLoad=(unsigned)(dLoadLastMin*100/15);
+#else
+#ifdef __linux__
 	if (0 == GetInFile ("/proc/loadavg",acLoadAvg,sizeof(acLoadAvg)))
 		return;
 	//Try and avoid the use of floating point
@@ -212,7 +327,10 @@ static void DoLoad(void * p)
 		return;
 	//Normalize, mapping load to number of LEDs
 	uLoad=(unsigned)((uLoadLastMinInt*100+uLoadLastMinDec)/15);
-
+#else
+#error "No input method found for LOAD"
+#endif
+#endif
 	uLoad=(uLoad >= 128) ? 256 : uLoad<<1; //Anything too high will light all LEDs
 
 	for (uLedBits=1;uLoad>1;uLedBits=uLedBits<<1) //Cheap log function
@@ -236,69 +354,60 @@ static void DoLoad(void * p)
 
 //CLIENT: This worker LED function updates the Traffic LEDs
 //
+//         if(    strstr(acLineBuffer, "eth0:") != NULL
+
 static void DoTraffic(void *p)
 {
-	static unsigned 		uLedBitsOld=0;
-	static long long		lAllPacketsPrior=0;
-	static struct timeval	tWhenPrior = { .tv_sec=0, .tv_usec=0};
-	
-	FILE 								*tProcFile=NULL;
-	char							acLineBuffer[2048]="";
 
-	long long 					lRxPackets;
-	long long 					lTxPackets;
-	long long					lAllPackets;
-	long							lRate;
+    static unsigned         uLedBitsOld=0;
+	static long		            lAllPacketsPrior=0;
+	static struct timeval	tWhenPrior;
 
-	struct timeval				tWhenNow;
+    struct timeval				tWhenNow;
 	struct timeval				tWhenDiff;
-
+#if HAVE_GETIFADDRS
+    struct ifaddrs              *pIfAddrs;
+    struct ifaddrs              *pThisIfAddrs;
+#endif
+	long 					        lAllPackets=0L;
+	long					        lRate;
 	unsigned 					uLedBits;
 
-	if((tProcFile=fopen( "/proc/net/dev", "r" )) == NULL)
-		return;
 	//Read clock, no timezone
 	if (gettimeofday(&tWhenNow,NULL))
-	{
-		fclose(tProcFile);
 		return;
-	}
-	fgets(acLineBuffer, sizeof(acLineBuffer), tProcFile); //Throw away line 1
-	fgets(acLineBuffer, sizeof(acLineBuffer), tProcFile); //Throw away line 2
-	//Read all lines, 1 by 1
-	for (lAllPackets=0;fgets(acLineBuffer, sizeof(acLineBuffer), tProcFile);)
-         if(    strstr(acLineBuffer, "eth0:") != NULL
-			|| strstr(acLineBuffer, "eth1:") != NULL
-			|| strstr(acLineBuffer, "eth2:") != NULL
-			|| strstr(acLineBuffer, "eth3:") != NULL
-			|| strstr(acLineBuffer, "eth4:") != NULL)
-	    {
-			//Only parse lines for base hardware interfaces, ignore others like lo, bond, tun, VLAN ethx., pppoe
-			//This is done so we avoid counting same packet multiple times
-			//Could be boot time rename of interface eth0-> eth1, could be PCI card with eth4
-            //Spacing is dynamic, sometimes interface name plus ":" is followed by a space, sometimes not
-            if(*( strchr(acLineBuffer,':')+1) == ' ' )
-                sscanf(acLineBuffer, "%*s %*u %Lu %*u %*u %*u %*u %*u %*u %*u %Lu %*u %*u %*u %*u %*u %*u",
-                                  &lRxPackets, &lTxPackets ); //This is for lines like eth1:<space>123
-            else
-                sscanf(acLineBuffer, "%*s %Lu %*u %*u %*u %*u %*u %*u %*u %Lu %*u %*u %*u %*u %*u %*u",
-                                  &lRxPackets, &lTxPackets ); //This is for lines like eth1:123
-			lAllPackets+=lRxPackets+lTxPackets;
-		}
-	fclose(tProcFile);
-	//If first time in, we have neither the old time stamp nor the old packet count
+#if HAVE_GETIFADDRS
+    if (getifaddrs(&pIfAddrs))
+        return;
+    for (pThisIfAddrs=pIfAddrs;pThisIfAddrs; pThisIfAddrs=pThisIfAddrs->ifa_next)
+        if (pThisIfAddrs->ifa_addr && AF_MAC == pThisIfAddrs->ifa_addr->sa_family)
+            if (0 == memcmp(pThisIfAddrs->ifa_name, ETHDEV "0",1+sizeof(ETHDEV)) ||
+                 0 == memcmp(pThisIfAddrs->ifa_name, ETHDEV "1",1+sizeof(ETHDEV)) ||
+                 0 == memcmp(pThisIfAddrs->ifa_name, ETHDEV "2",1+sizeof(ETHDEV)) ||
+                 0 == memcmp(pThisIfAddrs->ifa_name, ETHDEV "3",1+sizeof(ETHDEV)))
+                lAllPackets+= INOUT_PACKETS(pThisIfAddrs->ifa_data);
+    freeifaddrs(pIfAddrs);
+#else
+#if !HAVE_GETIFADDRS && defined(__linux__)
+	lAllPackets=GetPacketCount();
+#else
+#error "No input method found for TRAFFIC"
+#endif
+#endif
+	if (0L == lAllPackets)
+		return;
 	if (0L != lAllPacketsPrior)
 	{
 		//Rate is number of packets since last time divided by time diff since last time
-		//Normalize rate by dividing by 64
-		// 64     packets per second is 1 LED
+		//Normalize rate by dividing by 64 (64 packets per second is 1 LED)
 		GetTimeDiff (&tWhenPrior, &tWhenNow, &tWhenDiff);
+        if (0 == tWhenDiff.tv_sec && 0 == tWhenDiff.tv_usec)    //Avoid div by zero
+            return;
 		lRate=(lAllPackets-lAllPacketsPrior)*1000000/64/(tWhenDiff.tv_sec*1000000+tWhenDiff.tv_usec);
 		// 8192 packets per second and above is 8 LEDs
 		if (lRate > 8192/64)
 			lRate=8192/64;  //Anything higher than 8192 packets/second is all LEDs
-		//compute the logarithm of the rate the cheap way
-		//basically, find the highest bit set to 1
+		//compute the logarithm of the rate the cheap way (find the highest bit set to 1)
 		for (uLedBits=1;lRate>0;uLedBits=uLedBits<<1)
 			lRate=lRate>>1;
 		//Apply the style modifyer
@@ -314,8 +423,7 @@ static void DoTraffic(void *p)
 		if (uLedBits != uLedBitsOld)
 		{
 			uLedBitsOld=uLedBits;
-			//Use thread-safe LED update
-			DrvSetLeds(LED_TRAFFIC_LO-1+uLedBits);
+			DrvSetLeds(LED_NO_TRAFFIC+uLedBits);
 		}
 	}
 	//Set time and count baseline for next run
@@ -336,8 +444,9 @@ static void DoBlink(void *p)
 
 //CLIENT: This is the contructor for the triangle tips LEDs
 //  It sets up the ULOG socket
-void SetupULog(void *p)
+void SetupTips(void *p)
 {
+#if HAVE_LINUX_NETLINK_H && HAVE_LINUX_NETFILTER_IPV4_IPT_ULOG_H
 	//  As part of the Linux kernel, the netfilter architecture includes
 	//  the ULOG target. This means that when packets are processed by the
 	//  firewall and are sent down a list of rules in search of a match, there
@@ -374,11 +483,11 @@ void SetupULog(void *p)
 	struct sockaddr_nl	tLocalAddress;
 	unsigned				uSize = ULOG_RCVBUF;
 	int							iFlags;
-	tUlogPriv				*ptUlogPrivData;
+	tPriv				        *ptPrivData;
 
-	ptUlogPrivData = (tUlogPriv *)p;
+	ptPrivData = (tPriv *)p;
 	//netlink socket, of the raw sort, with ULOG protocol
-	if (-1 == (ptUlogPrivData->iUlogSocket = socket(PF_NETLINK, SOCK_RAW, NETLINK_NFLOG)))
+	if (-1 == (ptPrivData->iUlogSocket = socket(PF_NETLINK, SOCK_RAW, NETLINK_NFLOG)))
 		return;
 	//setup the local address
 	tLocalAddress.nl_family = AF_NETLINK;
@@ -386,31 +495,53 @@ void SetupULog(void *p)
 	tLocalAddress.nl_groups = FBLED_ULOG_GROUP_MASK;	//The group mask
 	tLocalAddress.nl_pad = 0;
 	//Bind the socket to the local address
-	if (-1 == bind(ptUlogPrivData->iUlogSocket,(const struct sockaddr *)&tLocalAddress, sizeof(tLocalAddress)))
+	if (-1 == bind(ptPrivData->iUlogSocket,(const struct sockaddr *)&tLocalAddress, sizeof(tLocalAddress)))
 		goto SetupULogErr;
 	//Set receive buffer size
-	if (-1 == setsockopt(ptUlogPrivData->iUlogSocket, SOL_SOCKET, SO_RCVBUF, &uSize, sizeof(uSize)))
+	if (-1 == setsockopt(ptPrivData->iUlogSocket, SOL_SOCKET, SO_RCVBUF, &uSize, sizeof(uSize)))
 		goto SetupULogErr;
 	//Set the socket as non-blocking. We want to keep fbled single treaded, so we don't want to wait
 	// for packets everytime we read the socket.
-	if (-1 == (iFlags = fcntl(ptUlogPrivData->iUlogSocket, F_GETFL, 0)))
+	if (-1 == (iFlags = fcntl(ptPrivData->iUlogSocket, F_GETFL, 0)))
 		goto SetupULogErr;
-	if (-1 == fcntl(ptUlogPrivData->iUlogSocket, F_SETFL, iFlags | O_NONBLOCK))
+	if (-1 == fcntl(ptPrivData->iUlogSocket, F_SETFL, iFlags | O_NONBLOCK))
 		goto SetupULogErr;
 	//Allocate some memory as a receive buffer for datagrams coming through the socket
-	if (NULL == (ptUlogPrivData->pUlogDatagram = (unsigned char *)malloc(ULOG_RCVBUF)))
+	if (NULL == (ptPrivData->pUlogDatagram = (unsigned char *)malloc(ULOG_RCVBUF)))
 		goto SetupULogErr;
 	return;
 	
 SetupULogErr:
-	close(ptUlogPrivData->iUlogSocket);
-	ptUlogPrivData->iUlogSocket = -1;
+	close(ptPrivData->iUlogSocket);
+	ptPrivData->iUlogSocket = -1;
+#else
+#if HAVE_PCAP_PCAP_H && HAVE_NET_IF_PFLOG_H
+	tPriv			*ptPrivData;
+    char             acPCapErr[PCAP_ERRBUF_SIZE];
+
+	ptPrivData = (tPriv *)p;
+
+    if (NULL == (ptPrivData->ptPCap = pcap_open_live(PCAP_DEVICE, PFLOG_HDRLEN,0,1000,acPCapErr)))
+        return;
+    //Set PCAP to non blocking mode, so we can read and get out if nothing is there
+    if (-1 == pcap_setnonblock(ptPrivData->ptPCap, 1, acPCapErr))
+        goto SetupPCapErr;
+    
+    return;
+SetupPCapErr:
+    pcap_close(ptPrivData->ptPCap);
+    ptPrivData->ptPCap = NULL;
+#else
+#error "No input method found for TRIANGLE TIPS"
+#endif
+#endif
 }
 
 //CLIENT: This is the worker for the triangle tips LEDs
 //
-void DoUlog(void *p)
+void GetTips(void *p)
 {
+#if HAVE_LINUX_NETLINK_H && HAVE_LINUX_NETFILTER_IPV4_IPT_ULOG_H
 	// This function is responsible for polling the netlink socket for datagrams.
 	// These datagrams are following the general ideas of the network stack,
 	// i.e. each layer keeps adding a header around the higher layer's data,
@@ -442,20 +573,14 @@ void DoUlog(void *p)
 	socklen_t								tSenderAddressLength = sizeof(tSenderAddress);
 	struct nlmsghdr 					*ptNetlinkHeader;
 	ulog_packet_msg_t				*ptUlogHeader;
-	tUlogPriv							*ptUlogPrivData;
+	tPriv							        *ptPrivData;
 
-	ptUlogPrivData = (tUlogPriv *)p;
+	ptPrivData = (tPriv *)p;
 	//Check the socket handle
-	if (-1 == ptUlogPrivData->iUlogSocket)
+	if (-1 == ptPrivData->iUlogSocket)
 		return;
-	//Check that memory was allocated for the receive buffer
-	//if (NULL == ptUlogPrivData->pUlogDatagram)
-	//	return;
-	//Check the socket is non blocking
-	//if (0 == (O_NONBLOCK & fcntl(ptUlogPrivData->iUlogSocket, F_GETFL, 0)))
-	//	return;	
 	//Check for a netlink datagram
-	if (-1 == (tSizeRead = recvfrom(ptUlogPrivData->iUlogSocket, ptUlogPrivData->pUlogDatagram, ULOG_RCVBUF,
+	if (-1 == (tSizeRead = recvfrom(ptPrivData->iUlogSocket, ptPrivData->pUlogDatagram, ULOG_RCVBUF,
 	                                  0, (struct sockaddr *)&tSenderAddress,  &tSenderAddressLength)))
 		return;	//Some error, including non-blocking (errno == EAGAIN) read
 	//Check datagram
@@ -466,7 +591,7 @@ void DoUlog(void *p)
 		|| 0 == ((1 << (tSenderAddress.nl_groups-1)) & FBLED_ULOG_GROUP_MASK))	//Not from a group we subscribed to
 		return;	//Not what we expected
 	//Now, look at content of netlink datagram, have to pay attention to alignment, so we use macros
-	for ( ptNetlinkHeader = (struct nlmsghdr *)ptUlogPrivData->pUlogDatagram;
+	for ( ptNetlinkHeader = (struct nlmsghdr *)ptPrivData->pUlogDatagram;
 	     	//Make sure the netlink packet passes sanity check
 	     	NLMSG_OK(ptNetlinkHeader,tSizeRead) &&
 	  		//In case multiple netlink packets are sent, the last one is DONE
@@ -483,36 +608,76 @@ void DoUlog(void *p)
 			if (ULMSG_OK(ptUlogHeader,ptNetlinkHeader->nlmsg_len - NLMSG_HDRLEN))
 			{
 				if (0 == memcmp(ptUlogHeader->indev_name,"eth0",4) || 0 == memcmp(ptUlogHeader->outdev_name,"eth0",4))
-					ptUlogPrivData->auDevBlipCount[0] = ULOG_BLIPS;
+					ptPrivData->auDevBlipCount[0] = FBLED_BLIPS;
 				if (0 == memcmp(ptUlogHeader->indev_name,"eth1",4) || 0 == memcmp(ptUlogHeader->outdev_name,"eth1",4))
-					ptUlogPrivData->auDevBlipCount[1] = ULOG_BLIPS;
+					ptPrivData->auDevBlipCount[1] = FBLED_BLIPS;
 				if (0 == memcmp(ptUlogHeader->indev_name,"eth2",4) || 0 == memcmp(ptUlogHeader->outdev_name,"eth2",4))
-					ptUlogPrivData->auDevBlipCount[2] = ULOG_BLIPS;
+					ptPrivData->auDevBlipCount[2] = FBLED_BLIPS;
 			}
 		}
-}
+#else
+#if HAVE_PCAP_PCAP_H && HAVE_NET_IF_PFLOG_H
+	tPriv		*ptPrivData;
 
+	ptPrivData = (tPriv *)p;
+    if (NULL == ptPrivData->ptPCap)
+        return;
+    //Read all packets, if available, from captured device
+    pcap_dispatch(ptPrivData->ptPCap, -1, HandlePCap, (u_char *)p);
+#else
+#error "No input method found for TRIANGLE TIPS"
+#endif
+#endif
+}
+#if HAVE_PCAP_PCAP_H && HAVE_NET_IF_PFLOG_H
+void HandlePCap(u_char *p, const struct pcap_pkthdr *ptPCapHdr, const u_char *pPayload)
+{
+	tPriv		          *ptPrivData;
+    struct pfloghdr *ptpfLogHdr;
+
+	ptPrivData = (tPriv *)p;
+    if (PFLOG_HDRLEN > ptPCapHdr->caplen)
+        return; //Did not get the whole pflog header, give up this packet
+    ptpfLogHdr = (struct pfloghdr *)pPayload;
+    //
+    if (0 == memcmp(ptpfLogHdr->ifname,ETHDEV "0",1+sizeof(ETHDEV)))
+        ptPrivData->auDevBlipCount[0] = FBLED_BLIPS;
+    if (0 == memcmp(ptpfLogHdr->ifname,ETHDEV "1",1+sizeof(ETHDEV)))
+        ptPrivData->auDevBlipCount[1] = FBLED_BLIPS;
+    if (0 == memcmp(ptpfLogHdr->ifname,ETHDEV "2",1+sizeof(ETHDEV)))
+        ptPrivData->auDevBlipCount[2] = FBLED_BLIPS;
+}
+#endif
 //CLIENT: This is the destructor for the triangle tips LEDs
 //
-void CloseUlog(void *p)
+void CloseTips(void *p)
 {
-	tUlogPriv		*ptUlogPrivData;
+	tPriv		*ptPrivData;
 
-	ptUlogPrivData = (tUlogPriv *)p;
-	if (-1 == ptUlogPrivData->iUlogSocket)
+	ptPrivData = (tPriv *)p;
+#if HAVE_LINUX_NETLINK_H && HAVE_LINUX_NETFILTER_IPV4_IPT_ULOG_H
+	if (-1 == ptPrivData->iUlogSocket)
 		return;
-	free(ptUlogPrivData->pUlogDatagram);
-	close(ptUlogPrivData->iUlogSocket);
+	free(ptPrivData->pUlogDatagram);
+	close(ptPrivData->iUlogSocket);
+#else
+#if HAVE_PCAP_PCAP_H && HAVE_NET_IF_PFLOG_H
+    if (NULL == ptPrivData->ptPCap)
+        return;
+    pcap_close(ptPrivData->ptPCap);
+#else
+#error "No input method found for TRIANGLE TIPS"
+#endif
+#endif
 }
-
 //CLIENT: This worker LED blips the triangle tips
 //
 void DoTips(void *p)
 {
 	static unsigned 	uTipLEDs = 0;
-	tUlogPriv				*ptUlogPrivData;
+	tPriv				            *ptPrivData;
 
-	ptUlogPrivData = (tUlogPriv *)p;
+	ptPrivData = (tPriv *)p;
 	if (uTipLEDs)
 	{
 		//Transition LEDs from on to off
@@ -522,41 +687,75 @@ void DoTips(void *p)
 	else
 	{
 		//Transition from off to on?
-		if (ptUlogPrivData->auDevBlipCount[0])
+		if (ptPrivData->auDevBlipCount[0])
 		{
-			ptUlogPrivData->auDevBlipCount[0]--;
+			ptPrivData->auDevBlipCount[0]--;
 			uTipLEDs |=  LED_EXTRN;
 		}
-		if (ptUlogPrivData->auDevBlipCount[1])
+		if (ptPrivData->auDevBlipCount[1])
 		{
-			ptUlogPrivData->auDevBlipCount[1]--;
+			ptPrivData->auDevBlipCount[1]--;
 			uTipLEDs |=  LED_TRUST;
 		}
-		if (ptUlogPrivData->auDevBlipCount[2])
+		if (ptPrivData->auDevBlipCount[2])
 		{
-			ptUlogPrivData->auDevBlipCount[2]--;
+			ptPrivData->auDevBlipCount[2]--;
 			uTipLEDs |=  LED_OPTNL;
 		}
 		if (uTipLEDs)
 			DrvSetLeds(uTipLEDs);
 	}
 }
-
 //CLIENT: Helper function to get stuff in text files
 //
+#if defined(__linux__) && !HAVE_GETLOADAVG
 static int GetInFile(const char *acFileName, char *acDest, const unsigned uSize)
 {
-	FILE		*tFile=NULL;
+	FILE		*ptFile=NULL;
 	int		iReturnVal=-1;
 
-	if (NULL==(tFile=fopen(acFileName,"r")))
+	if (NULL==(ptFile=fopen(acFileName,"r")))
 		return 0;
-	if (NULL == fgets(acDest, uSize, tFile))
+	if (NULL == fgets(acDest, uSize, ptFile))
 		iReturnVal=0;
-	fclose(tFile);
+	fclose(ptFile);
 	return iReturnVal;
 }
+#endif
 
+#if defined(__linux__) && !HAVE_GETIFADDRS
+//UTIL: Provide Linux implementation to get packet count from /proc/net/dev
+//
+static long GetPacketCount(void)
+{
+	FILE								*ptFile=NULL;
+	char							acBuffer[1024], *pc, *pcItem;
+	unsigned					u;
+	long							lPackets=0L;
+	
+	if (NULL == (ptFile = fopen ("/proc/net/dev", "r")))
+		return (0);
+
+	for (;fgets(acBuffer, sizeof(acBuffer), ptFile) != NULL;)
+	{
+		//proc/net/dev has lines like "<spaces><device name>:{N Times: <spaces><number>}
+		if (NULL == strchr(acBuffer, ':')) //Throw away headers
+			continue;
+		for (u=0, pc=acBuffer;NULL != (pcItem=strtok(pc, " :\t\r\n"));pc=NULL, u++)
+			if (0 == u)		//device name
+			{
+				if (memcmp(pcItem,ETHDEV "0",1+sizeof(ETHDEV)) && 
+				    memcmp(pcItem,ETHDEV "1",1+sizeof(ETHDEV)) && 
+				    memcmp(pcItem,ETHDEV "2",1+sizeof(ETHDEV)))
+					break;
+			}
+			else if (2 == u || 10 == u) //Packets in/out
+						lPackets+=atoll(pcItem);
+	}
+	fclose (ptFile);
+	return(lPackets);
+}
+#endif
 //UTIL: time difference
 //
 void GetTimeDiff(
@@ -645,7 +844,9 @@ void ExitHandler(int iSigNum)
 //
 void UserHandler(int iSigNum)
 {
+#if HAVE_STRUCT_TMS_TMS_STIME
 	struct tms tCPUTicks;
+#endif
 
 	//For USR1 and USR2
 	switch (iSigNum)
@@ -672,9 +873,11 @@ void UserHandler(int iSigNum)
 			//break;
 			
 		case SIGUSR2:
-			//uStackStyle^=STACK_REVERSE;
+			uStackStyle^=STACK_REVERSE;
+#if HAVE_STRUCT_TMS_TMS_STIME
 			times(&tCPUTicks);
 			printf("CPU Utilization: user = %lu sys = %lu\n", tCPUTicks.tms_utime, tCPUTicks.tms_stime);
+#endif
 	}
 }
 
@@ -682,7 +885,9 @@ void UserHandler(int iSigNum)
 //
 int main(int nArgc, char **asArgv)
 {
+#if HAVE_STRUCT_TMS_TMS_STIME
 	struct tms tCPUStats;
+#endif
 	
 	puts(PACKAGE_STRING);
 
@@ -708,9 +913,10 @@ int main(int nArgc, char **asArgv)
 		puts("Cannot Finalize Driver...");
 		return errno;
 	}
+#if HAVE_STRUCT_TMS_TMS_STIME
 	//Print out some CPU usage
 	times(&tCPUStats);
 	printf("CPU Utilization: user = %lu, sys = %lu\n",tCPUStats.tms_utime, tCPUStats.tms_stime);
-	
+#endif
 	return 0;
 }
