@@ -23,7 +23,6 @@
 // logically separated into a Driver and a Client.
 //
 // The Driver is responsible for updating the LEDs based on input parameters, and deals with low-level I/O ports.
-// This driver might be reimplemented as a real Linux driver/module at a later point.
 //
 // The Client is responsible for gathering the live values from the running system, parse them, normalize them, then pass them
 // to the Driver.
@@ -56,6 +55,8 @@
 //            be lit up individually, there is no "stack" concept in hardware. It all need to be built in the code.
 //  Note: As is tradition, the Driver is just responsible for offering the means to control the LEDs. It is not responsible for
 //            policy, i.e. what information in what form goes to what LED.
+//  Note: There is an emulator that can simulate the LEDs in simple text. This emulator is compiled in on all non x86
+//            architectures, or if LED_EMU is defined under x86.
 //=============================================================================
 //
 // Client Logic:
@@ -67,15 +68,13 @@
 //  Armed: "Green light indicates the Firebox has been booted and is running."
 //               Flashes to indictate fbled is running
 //    Sys A: "Indicates that the Firebox is running from its primary user-defined configuration."
-//               Idea: os running off of ramdrive, early boot
 //    Sys B: "Indicates that the Firebox is running from the readonly factory default system area."
-//               Idea: os running off of storage device, root file system mounted, normal operation
 //   Power: "Indicates that the Firebox is currently powered up."
 //               Direct harware wiring, no software control
 // Triangle: "Indicates traffic between Firebox interfaces. Green arrows briefly light to indicate allowed traffic
 //                between two interfaces in the direction of the arrows. A red light at a triangle corner indicates 
 //                that the Firebox is denying packets at that interface."
-//                Corner: The firewall sent a packet to the ULOG target, blink for a bit
+//                Corner: The firewall sent a packet to be logged, blink for a bit
 //    Traffic: "A stack of lights that functions as a meter to indicate levels of traffic volume through the 
 //                Firebox. Low volume indicators are green, while high volume indicators are yellow. The display 
 //                updates three times per second. The scale is exponential: the first light represents 64 packets/ 
@@ -91,7 +90,7 @@
 //               This stack is controlled by Load Average, with a logarithmic scale.
 //
 // Client Architecture
-//               Overall, the client is basically an infinite loop of execution threads with a configurable wait time. The
+//               Overall, the client is basically an infinite loop of execution with a wait time. The
 //               implementation is based on running a number of functions (the Do... functions), one per group
 //               of LEDs. The exit condition is the receipt of one of the usual termination signals.
 //=============================================================================
@@ -145,13 +144,13 @@
 #define DRV_INIT_WAIT		200000000 //.2 sec in micro seconds
 
 //Workers constants
-#ifdef LED_DEBUG
-#define WRK_WAIT           1000000L/2   //Debug base timer is 1/2 sec
+#if !defined(__i386__) || defined(LED_EMU)
+#define WRK_WAIT           1000000L/2   //Emulator base timer is 1/2 sec
 #else
 #define WRK_WAIT			1000000L/6	//Base scheduler wait time is 1/6 of a sec
 #endif
 
-#ifndef LED_DEBUG
+#if defined(__i386__) && !defined(LED_EMU)
 //Real Watchguard range 00:90:7F
 #define WATCHGUARD_OUI "\000\0220\0177"
 #else
@@ -237,27 +236,26 @@ void ExitHandler(int);
 void UserHandler(int);
 void GetTimeDiff(struct timeval *, struct timeval *, struct timeval *);
 
-#ifndef LED_DEBUG
-//Run-time version of low-level io routines
-#ifdef __linux__
-#define OUTB(val,port) outb((val),(port))
-#endif
-#ifdef __FreeBSD__
-#define OUTB(val, port) outb((port),(val))
-#endif
+#if defined(__i386__) && !defined(LED_EMU)
+//Run-time version of low-level io routines on i386 only
 #if HAVE_IOPERM
 #define IOPERM(port, count, yesno) ioperm((port), (count), (yesno))
-#endif
+#define OUTB(val,port) outb((val),(port))
+#else
 #if HAVE_I386_SET_IOPERM
 #define IOPERM(port, count, mask) i386_set_ioperm((port), (count), (mask))
+#define OUTB(val, port) outb((port),(val))
+#else
+#error "No port i/o function available"
 #endif
-#else /*LED_DEBUG*/
-//Debug version of low-level routines
+#endif
+#else /*LED_EMU*/
+//Emulator version of low-level routines
 void DrvEmu(u_int, u_char);
 u_char DrvEmuBitsToChar(u_char, char *);
 #define OUTB(val,port) DrvEmu(port,val)
 #define IOPERM(port, count, yesno) 0
-#endif /*LED_DEBUG*/
+#endif /*LED_EMU*/
 
 //Deal with results of getifaddrs()
 #if HAVE_GETIFADDRS

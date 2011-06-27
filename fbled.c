@@ -104,8 +104,6 @@
 #if HAVE_NET_IF_PFLOG_H
 #include <net/if_pflog.h>
 #endif
-//This bypasses the LED hardware and uses the text emulator
-//#define LED_DEBUG
 #include "fbled.h"
 
 //Place to put variables to be shared between the workers
@@ -251,7 +249,7 @@ static void DrvSetLedsWait(unsigned uCombo, unsigned long ulInterval)
 
 //DRIVER: Emulate LED panel
 //
-#ifdef LED_DEBUG
+#if !defined(__i386__) || defined(LED_EMU)
 void DrvEmu(u_int uPort, u_char cData)
 {
     static u_char cLoad=0, cTraffic=0, cStatus=0, cTriangle=0, cBits=0, cStrobe=0;
@@ -280,7 +278,7 @@ void DrvEmu(u_int uPort, u_char cData)
 #endif
 //Driver: Emulator Bits to Chars
 //
-#ifdef LED_DEBUG
+#if !defined(__i386__) || defined(LED_EMU)
 u_char DrvEmuBitsToChar(u_char cData, char *pStr)
 {
     unsigned u;
@@ -354,8 +352,6 @@ static void DoLoad(void * p)
 
 //CLIENT: This worker LED function updates the Traffic LEDs
 //
-//         if(    strstr(acLineBuffer, "eth0:") != NULL
-
 static void DoTraffic(void *p)
 {
 
@@ -639,8 +635,8 @@ void HandlePCap(u_char *p, const struct pcap_pkthdr *ptPCapHdr, const u_char *pP
     if (PFLOG_HDRLEN > ptPCapHdr->caplen)
         return; //Did not get the whole pflog header, give up this packet
     ptpfLogHdr = (struct pfloghdr *)pPayload;
-    //
-    if (0 == memcmp(ptpfLogHdr->ifname,ETHDEV "0",1+sizeof(ETHDEV)))
+
+	if (0 == memcmp(ptpfLogHdr->ifname,ETHDEV "0",1+sizeof(ETHDEV)))
         ptPrivData->auDevBlipCount[0] = FBLED_BLIPS;
     if (0 == memcmp(ptpfLogHdr->ifname,ETHDEV "1",1+sizeof(ETHDEV)))
         ptPrivData->auDevBlipCount[1] = FBLED_BLIPS;

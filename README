@@ -47,6 +47,10 @@ return is structured differently, and the definitions needed to achieve the
 result are placed in header files whose location vary. A great number of hours
 are spent in the airgap between the meanings of similar and identical.
 
+In order to assist with development, a mini emulator was coded. It simply
+mirrors the LEDs in text on the command line. Once coded, this emulator
+made it possible to compile and run fbled on several architectures. 
+
 fbled is licensed under GPLv3, and is offered to others in the spirit of giving
 something back to the free software movement.
 
@@ -81,13 +85,21 @@ FreeBSD:
 	pfSense
 	m0n0wall
 
+ARCHITECTURE
+Obviously, fbled is coded to update the actual LEDS of the x86-based appliances
+from Watchguard. Running fbled with the emulator is possible on other
+architectures, though. fbled compiles and runs under Linux on ARM, SPARC, MIPS
+and PowerPC. fbled is expected to compile and run on non x86 FreeBSD as well.
+Conversely, fbled can run the emulator on x86 as well. In order to do so, fbled
+needs to be compiled with the LED_EMU symbol defined.
+
 Folks are encouraged to use the wiki to share their experience and help others
 
                                       https://github.com/fmertz/fbled/wiki
 
 LINUX NOTES:
 Load: getloadavg() from the C library, except uClibc reads from /proc/loadavg.
-Traffic: getifaddrs() from the C library.
+Traffic: getifaddrs() from the C library. except uClibc reads from /proc/net/dev
 Triangle Tips: Netlink socket to kernel for ULOG messages
 	In order to work, the firewall needs to be modified. When you want to have a
 	triangle tip blink for some condition, the conditions need to be configured in
@@ -108,5 +120,9 @@ Triangle Arrows: <FUTURE> Light up based on the number of connections as
 FREEBSD NOTES:
 Load: getloadavg from the FreeBSD C Library
 Traffic: getifaddrs from the FreeBSD C Library
+Triangle Tips: packet capture of the pflog: device. pf can be configured to send
+  packets to the log. fbled uses the pcap library to capture raw frames from the
+  pflog: device where pf sent them, and report captures on the dc<x> devices
+  to the right triangle corner.
 Triangle: <FUTURE> Interface with pf (?)
 
